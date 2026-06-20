@@ -14,7 +14,7 @@ func NewGRPCClient(client routingpb.RoutingClient) *GRPCClient {
 	return &GRPCClient{client: client}
 }
 
-func (c *GRPCClient) FindRouteClient(ctx context.Context, sourceBIC, destBIC, currency string) (int64, int, error) {
+func (c *GRPCClient) FindRoute(ctx context.Context, sourceBIC, destBIC, currency string) (int64, int, error) {
 	resp, err := c.client.FindRoute(ctx, &routingpb.FindRouteRequest{
 		SourceBic:      sourceBIC,
 		DestinationBic: destBIC,
@@ -27,25 +27,6 @@ func (c *GRPCClient) FindRouteClient(ctx context.Context, sourceBIC, destBIC, cu
 	return r.GetFee(), int(r.GetEstimatedMs()), nil
 }
 
-func (c *GRPCClient) FindRoute(ctx context.Context, sourceBIC, destBIC, currency string) (*Route, error) {
-	resp, err := c.client.FindRoute(ctx, &routingpb.FindRouteRequest{
-		SourceBic:      sourceBIC,
-		DestinationBic: destBIC,
-		Currency:       currency,
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetRoute()
-	return &Route{
-		SourceBIC:      r.GetSourceBic(),
-		DestinationBIC: r.GetDestinationBic(),
-		Currency:       r.GetCurrency(),
-		Fee:            r.GetFee(),
-		EstimatedMs:    int(r.GetEstimatedMs()),
-	}, nil
-}
-
 type GRPCServer struct {
 	routingpb.UnimplementedRoutingServer
 	svc *Service
@@ -56,7 +37,7 @@ func NewGRPCServer(svc *Service) *GRPCServer {
 }
 
 func (s *GRPCServer) FindRoute(ctx context.Context, req *routingpb.FindRouteRequest) (*routingpb.FindRouteResponse, error) {
-	route, err := s.svc.FindRoute(ctx, req.GetSourceBic(), req.GetDestinationBic(), req.GetCurrency())
+	route, err := s.svc.LookupRoute(ctx, req.GetSourceBic(), req.GetDestinationBic(), req.GetCurrency())
 	if err != nil {
 		return nil, err
 	}

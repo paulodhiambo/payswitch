@@ -1,7 +1,9 @@
 -- name: CreatePayment :one
 INSERT INTO payment (id, end_to_end_id, source_bic, destination_bic,
-                     source_account, dest_account, amount, currency, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     source_account, dest_account, amount, currency, status,
+                     uetr, instr_id, charge_bearer, sttlm_dt,
+                     debtor_name, creditor_name, purpose_code, remittance_info)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 RETURNING *;
 
 -- name: UpdatePaymentStatus :exec

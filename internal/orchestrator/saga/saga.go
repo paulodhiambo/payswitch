@@ -3,8 +3,16 @@ package saga
 import (
 	"context"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"switch/internal/orchestrator/domain"
+	"switch/pkg/telemetry"
 )
+
+var tracer = otel.Tracer("saga")
 
 type Step interface {
 	Name() string
@@ -21,15 +29,30 @@ func New(steps ...Step) *Saga {
 }
 
 func (s *Saga) Run(ctx context.Context, p *domain.Payment) error {
+	ctx, span := tracer.Start(ctx, "saga.Run",
+		trace.WithAttributes(telemetry.SpanAttrs(p.ID, p.EndToEndID, string(p.Status))...),
+	)
+	defer span.End()
+
 	completed := make([]Step, 0, len(s.steps))
 	for _, step := range s.steps {
-		if err := step.Execute(ctx, p); err != nil {
+		if err := s.execStep(ctx, step, p); err != nil {
+			span.SetStatus(codes.Error, err.Error())
+			span.RecordError(err)
 			s.rollback(ctx, p, completed)
 			return err
 		}
 		completed = append(completed, step)
 	}
 	return nil
+}
+
+func (s *Saga) execStep(ctx context.Context, step Step, p *domain.Payment) error {
+	ctx, span := tracer.Start(ctx, "saga.step."+step.Name(),
+		trace.WithAttributes(attribute.String("step", step.Name())),
+	)
+	defer span.End()
+	return step.Execute(ctx, p)
 }
 
 func (s *Saga) CompensatePayment(ctx context.Context, p *domain.Payment) error {

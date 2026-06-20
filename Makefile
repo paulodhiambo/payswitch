@@ -1,12 +1,17 @@
-.PHONY: build test vet proto sqlc tidy clean
+.PHONY: build test vet proto sqlc tidy clean build-portal
 
-SERVICES := gateway compliance-service lookup-service settlement-service quoting-service notification-service audit-service reconciliation-service routing-service certificate-service certgen
+SERVICES := gateway compliance-service lookup-service settlement-service quoting-service notification-service audit-service reconciliation-service routing-service certificate-service certgen portal-api
 
-build:
+build: build-portal
 	@for svc in $(SERVICES); do \
 		echo "building bin/$$svc..."; \
 		go build -o "bin/$$svc" "./cmd/$$svc"; \
 	done
+
+build-portal:
+	@echo "building portal frontend..."
+	cd portal && npm install && npm run build
+
 
 test:
 	go test ./... -race -count=1
@@ -41,3 +46,4 @@ load-soak:
 
 clean:
 	rm -rf bin/
+	rm -rf portal/dist

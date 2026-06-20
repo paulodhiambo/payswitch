@@ -23,7 +23,7 @@ func NewGRPCClient(client notificationpb.NotificationClient) *GRPCClient {
 	return &GRPCClient{client: client}
 }
 
-func (c *GRPCClient) NotifyClient(ctx context.Context, participantID, channel, title, body, paymentID, status string) error {
+func (c *GRPCClient) Notify(ctx context.Context, participantID, channel, title, body, paymentID, status string) error {
 	_, err := c.client.Notify(ctx, &notificationpb.NotificationRequest{
 		ParticipantId: participantID,
 		Channel:       channel,
@@ -36,7 +36,7 @@ func (c *GRPCClient) NotifyClient(ctx context.Context, participantID, channel, t
 }
 
 func (s *GRPCServer) Notify(ctx context.Context, req *notificationpb.NotificationRequest) (*notificationpb.NotificationResponse, error) {
-	err := s.svc.Notify(ctx, &NotificationRequest{
+	err := s.svc.notify(ctx, &NotificationRequest{
 		ParticipantID: req.GetParticipantId(),
 		Channel:       req.GetChannel(),
 		Title:         req.GetTitle(),

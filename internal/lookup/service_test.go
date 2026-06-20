@@ -38,7 +38,7 @@ func TestLookup_Found(t *testing.T) {
 	svc := lookup.New(newMockCache())
 	info, err := svc.Lookup(context.Background(), "BANKUS33")
 	require.NoError(t, err)
-	require.Equal(t, "Bank A US", info.Name)
+	require.Equal(t, "First National Bank", info.Name)
 	require.Equal(t, "US", info.Country)
 }
 

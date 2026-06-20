@@ -11,7 +11,7 @@ import (
 
 func TestFindRoute_Found(t *testing.T) {
 	svc := routing.New()
-	route, err := svc.FindRoute(context.Background(), "BANKUS33", "BANKDEFF", "USD")
+	route, err := svc.LookupRoute(context.Background(), "BANKUS33", "BANKDEFF", "USD")
 	require.NoError(t, err)
 	require.Equal(t, "BANKUS33", route.SourceBIC)
 	require.Equal(t, "BANKDEFF", route.DestinationBIC)
@@ -20,13 +20,13 @@ func TestFindRoute_Found(t *testing.T) {
 
 func TestFindRoute_NotFound(t *testing.T) {
 	svc := routing.New()
-	_, err := svc.FindRoute(context.Background(), "BANKUS33", "NONEXIST", "USD")
+	_, err := svc.LookupRoute(context.Background(), "BANKUS33", "NONEXIST", "USD")
 	require.Error(t, err)
 }
 
 func TestFindRoute_WrongCurrency(t *testing.T) {
 	svc := routing.New()
-	_, err := svc.FindRoute(context.Background(), "BANKUS33", "BANKDEFF", "GBP")
+	_, err := svc.LookupRoute(context.Background(), "BANKUS33", "BANKDEFF", "JPY")
 	require.Error(t, err)
 }
 
@@ -37,7 +37,7 @@ func TestAddRoute(t *testing.T) {
 		Currency: "GBP", Fee: 300, EstimatedMs: 3000,
 	})
 
-	route, err := svc.FindRoute(context.Background(), "BANKUS33", "BANKDEFF", "GBP")
+	route, err := svc.LookupRoute(context.Background(), "BANKUS33", "BANKDEFF", "GBP")
 	require.NoError(t, err)
 	require.Equal(t, int64(300), route.Fee)
 }

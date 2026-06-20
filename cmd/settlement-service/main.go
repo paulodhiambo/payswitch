@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -32,6 +33,15 @@ func main() {
 
 	logger := telemetry.InitLogger("settlement-service")
 
+	if cfg.OTLPEndpoint != "" {
+		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "settlement-service")
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+		} else {
+			defer tp.Shutdown(ctx)
+		}
+	}
+
 	metrics.Listen(cfg.MetricsAddr)
 
 	engine := settlement.NewEngine()
@@ -50,7 +60,9 @@ func main() {
 		logger.Info("no scylla hosts configured — ledger disabled")
 	}
 
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
 	settlementpb.RegisterSettlementServer(grpcSrv, settlement.NewGRPCServer(engine))
 	reflection.Register(grpcSrv)
 

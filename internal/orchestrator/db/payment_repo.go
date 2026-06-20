@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,6 +13,20 @@ import (
 	"switch/internal/orchestrator/domain"
 	"switch/pkg/outbox"
 )
+
+func textOrNull(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+func dateOrNull(t time.Time) pgtype.Date {
+	if t.IsZero() {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: t, Valid: true}
+}
 
 type PaymentRepo struct {
 	pool *pgxpool.Pool
@@ -36,6 +51,14 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 		Amount:         p.Amount,
 		Currency:       p.Currency,
 		Status:         string(p.Status),
+		UETR:           textOrNull(p.UETR),
+		InstrID:        textOrNull(p.InstrID),
+		ChargeBearer:   textOrNull(p.ChargeBearer),
+		SttlmDt:        dateOrNull(p.SettlementDate),
+		DebtorName:     textOrNull(p.DebtorName),
+		CreditorName:   textOrNull(p.CreditorName),
+		PurposeCode:    textOrNull(p.PurposeCode),
+		RemittanceInfo: textOrNull(p.RemittanceInfo),
 	})
 	if err != nil {
 		return err
@@ -62,6 +85,14 @@ func (r *PaymentRepo) CreateWithEvent(ctx context.Context, p *domain.Payment) er
 		Amount:         p.Amount,
 		Currency:       p.Currency,
 		Status:         string(p.Status),
+		UETR:           textOrNull(p.UETR),
+		InstrID:        textOrNull(p.InstrID),
+		ChargeBearer:   textOrNull(p.ChargeBearer),
+		SttlmDt:        dateOrNull(p.SettlementDate),
+		DebtorName:     textOrNull(p.DebtorName),
+		CreditorName:   textOrNull(p.CreditorName),
+		PurposeCode:    textOrNull(p.PurposeCode),
+		RemittanceInfo: textOrNull(p.RemittanceInfo),
 	})
 	if err != nil {
 		return err
@@ -140,7 +171,7 @@ func writeEventTx(ctx context.Context, q *sqlc.Queries, tx pgx.Tx, paymentID str
 		return err
 	}
 
-	return outbox.Write(ctx, tx, "payment."+string(to), row.EndToEndID, domain.PaymentEvent{
+	return outbox.Write(ctx, tx, "payment."+strings.ToLower(string(to)), row.EndToEndID, domain.PaymentEvent{
 		PaymentID:  row.ID,
 		EndToEndID: row.EndToEndID,
 		FromStatus: from,
@@ -216,6 +247,30 @@ func mapFromSQLC(s *sqlc.Payment) *domain.Payment {
 	}
 	if s.ExpiresAt.Valid {
 		p.ExpiresAt = &s.ExpiresAt.Time
+	}
+	if s.UETR.Valid {
+		p.UETR = s.UETR.String
+	}
+	if s.InstrID.Valid {
+		p.InstrID = s.InstrID.String
+	}
+	if s.ChargeBearer.Valid {
+		p.ChargeBearer = s.ChargeBearer.String
+	}
+	if s.SttlmDt.Valid {
+		p.SettlementDate = s.SttlmDt.Time
+	}
+	if s.DebtorName.Valid {
+		p.DebtorName = s.DebtorName.String
+	}
+	if s.CreditorName.Valid {
+		p.CreditorName = s.CreditorName.String
+	}
+	if s.PurposeCode.Valid {
+		p.PurposeCode = s.PurposeCode.String
+	}
+	if s.RemittanceInfo.Valid {
+		p.RemittanceInfo = s.RemittanceInfo.String
 	}
 	return p
 }

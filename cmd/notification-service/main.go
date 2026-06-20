@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -25,16 +26,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	logger := telemetry.InitLogger("notification-service")
+
+	if cfg.OTLPEndpoint != "" {
+		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "notification-service")
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+		} else {
+			defer tp.Shutdown(ctx)
+		}
+	}
 
 	metrics.Listen(cfg.MetricsAddr)
 
 	svc := notification.New()
 
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
 	notificationpb.RegisterNotificationServer(grpcSrv, notification.NewGRPCServer(svc))
 	reflection.Register(grpcSrv)
 

@@ -36,7 +36,7 @@ func New() *Service {
 	}
 }
 
-func (s *Service) GetQuote(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (*Quote, error) {
+func (s *Service) getQuote(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (*Quote, error) {
 	if sourceBIC == "" || destBIC == "" {
 		return nil, fmt.Errorf("source and destination BIC are required")
 	}
@@ -66,8 +66,8 @@ func (s *Service) GetQuote(ctx context.Context, sourceBIC, destBIC string, amoun
 	return q, nil
 }
 
-func (s *Service) GetQuoteClient(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (string, int64, int64, error) {
-	q, err := s.GetQuote(ctx, sourceBIC, destBIC, amount, currency)
+func (s *Service) GetQuote(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (string, int64, int64, error) {
+	q, err := s.getQuote(ctx, sourceBIC, destBIC, amount, currency)
 	if err != nil {
 		return "", 0, 0, err
 	}

@@ -1,29 +1,56 @@
 services:
 
-  kong:
-    image: kong:3.8
-    ports:
-      - "8443:8443"
-    environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yaml
-      KONG_PROXY_LISTEN: "0.0.0.0:8443 http2 ssl"
-      KONG_SSL_CERT: /certs/server-cert.pem
-      KONG_SSL_KEY: /certs/server-key.pem
-      KONG_SSL_CLIENT_CERT: "on"
-      KONG_SSL_CLIENT_CA: /certs/ca-cert.pem
-      KONG_SSL_VERIFY_DEPTH: 2
-      KONG_LOG_LEVEL: notice
+  # ---------------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------------
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
     volumes:
-      - ../kong/kong.yaml:/etc/kong/kong.yaml
-      - ./certs:/certs
-    depends_on:
-      gateway: { condition: service_healthy }
+      - ../tempo/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC ingest
+      - "3200:3200"   # Tempo HTTP query API (queried by Grafana)
     healthcheck:
-      test: ["CMD", "kong", "health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "wget", "-qO-", "http://localhost:3200/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.51.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      tempo: { condition: service_healthy }
+      prometheus: { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
 
   postgres:
     image: postgres:16-alpine
@@ -72,6 +99,160 @@ services:
       timeout: 5s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # One-shot init services
+  # ---------------------------------------------------------------------------
+
+  # Generates a dev CA, server cert, and bank-a client cert into the named
+  # volume 'certs'. Kong and any mTLS test client use that volume.
+  # Skips generation if ca-cert.pem already exists (idempotent restarts).
+  certgen:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: certgen
+    working_dir: /certs
+    entrypoint: ["sh", "-c", "[ -f ca-cert.pem ] || /service"]
+    volumes:
+      - certs:/certs
+    restart: "no"
+
+  # Applies all SQL migrations in order. Services that need the schema depend
+  # on this with condition: service_completed_successfully.
+  migrate:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: switch
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -U switch; do sleep 1; done
+        psql -h postgres -U switch -d switch -f /schema/0001_init.sql
+        psql -h postgres -U switch -d switch -f /schema/0002_iso20022.sql
+        psql -h postgres -U switch -d switch -f /schema/0003_portal.sql
+        psql -h postgres -U switch -d switch -f /schema/0004_seed.sql
+    volumes:
+      - ../../migrations/postgres/0001_init.sql:/schema/0001_init.sql:ro
+      - ../../migrations/postgres/0002_iso20022.sql:/schema/0002_iso20022.sql:ro
+      - ../../migrations/postgres/0003_portal.sql:/schema/0003_portal.sql:ro
+      - ../../migrations/postgres/0004_seed.sql:/schema/0004_seed.sql:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Identity Provider (Authentik)
+  # ---------------------------------------------------------------------------
+
+  authentik-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: authentik
+      POSTGRES_DB: authentik
+    volumes:
+      - authentik-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  authentik-redis:
+    image: redis:7-alpine
+    volumes:
+      - authentik-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2024.12
+    command: server
+    ports:
+      - "9000:9000"    # HTTP UI + API
+      - "9443:9443"    # HTTPS UI + API
+    environment:
+      AUTHENTIK_SECRET_KEY: "switch-dev-secret-key-change-in-production-1234567890"
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik-db
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      # Bootstrap admin credentials for dev
+      AUTHENTIK_BOOTSTRAP_PASSWORD: "switchadmin"
+      AUTHENTIK_BOOTSTRAP_TOKEN: "switch-dev-bootstrap-token"
+      AUTHENTIK_BOOTSTRAP_EMAIL: "admin@switch.local"
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+    depends_on:
+      authentik-db: { condition: service_healthy }
+      authentik-redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/-/health/ready/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2024.12
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: "switch-dev-secret-key-change-in-production-1234567890"
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik-db
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - ../authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      authentik-db: { condition: service_healthy }
+      authentik-redis: { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # API gateway (Kong + payment-switch gateway)
+  # ---------------------------------------------------------------------------
+
+  kong:
+    image: kong:3.8
+    ports:
+      - "8443:8443"   # HTTPS + mTLS — bank payment API
+      - "8000:8000"   # HTTP — portal proxy (Authentik forward-auth)
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PLUGINS: "bundled,forward-auth"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yaml
+      KONG_PROXY_LISTEN: "0.0.0.0:8443 http2 ssl, 0.0.0.0:8000"
+      # Server TLS — cert presented to connecting clients
+      KONG_SSL_CERT: /certs/server-cert.pem
+      KONG_SSL_CERT_KEY: /certs/server-key.pem
+      # mTLS — require and verify client certificates via NGINX directive injection
+      KONG_NGINX_PROXY_SSL_CLIENT_CERTIFICATE: /certs/ca-cert.pem
+      KONG_NGINX_PROXY_SSL_VERIFY_CLIENT: "optional"
+      KONG_NGINX_PROXY_SSL_VERIFY_DEPTH: "2"
+      KONG_LOG_LEVEL: notice
+    volumes:
+      - ../kong/kong.yaml:/etc/kong/kong.yaml:ro
+      - ../kong/plugins/forward-auth:/usr/local/share/lua/5.1/kong/plugins/forward-auth:ro
+      - certs:/certs:ro
+    depends_on:
+      certgen: { condition: service_completed_successfully }
+      gateway: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   gateway:
     build:
       context: ../..
@@ -79,7 +260,7 @@ services:
       args:
         SERVICE: gateway
     ports:
-      - "9095:9095"
+      - "9095:9095"   # metrics only; internal HTTP :8080 is reached via Kong
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9095"
@@ -89,15 +270,25 @@ services:
       COMPLIANCE_ADDR: "compliance-service:9090"
       LOOKUP_ADDR: "lookup-service:9090"
       SETTLEMENT_ADDR: "settlement-service:9090"
+      QUOTING_ADDR: "quoting-service:9090"
+      NOTIFICATION_ADDR: "notification-service:9090"
+      ROUTING_ADDR: "routing-service:9090"
+      RECONCILIATION_ADDR: "reconciliation-service:9090"
+      OTLP_ENDPOINT: "tempo:4317"
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redpanda: { condition: service_healthy }
       redis: { condition: service_healthy }
+      tempo: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Domain services
+  # ---------------------------------------------------------------------------
 
   compliance-service:
     build:
@@ -106,11 +297,13 @@ services:
       args:
         SERVICE: compliance-service
     ports:
-      - "9091:9090"
-      - "9096:9095"
+      - "9096:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "tempo:4317"
+    depends_on:
+      tempo: { condition: service_healthy }
 
   lookup-service:
     build:
@@ -119,14 +312,15 @@ services:
       args:
         SERVICE: lookup-service
     ports:
-      - "9092:9090"
-      - "9097:9095"
+      - "9097:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
       REDIS_ADDR: "redis:6379"
+      OTLP_ENDPOINT: "tempo:4317"
     depends_on:
       redis: { condition: service_healthy }
+      tempo: { condition: service_healthy }
 
   settlement-service:
     build:
@@ -135,11 +329,13 @@ services:
       args:
         SERVICE: settlement-service
     ports:
-      - "9093:9090"
-      - "9098:9095"
+      - "9098:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "tempo:4317"
+    depends_on:
+      tempo: { condition: service_healthy }
 
   quoting-service:
     build:
@@ -148,11 +344,13 @@ services:
       args:
         SERVICE: quoting-service
     ports:
-      - "9094:9090"
-      - "9099:9095"
+      - "9099:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "tempo:4317"
+    depends_on:
+      tempo: { condition: service_healthy }
 
   notification-service:
     build:
@@ -161,11 +359,43 @@ services:
       args:
         SERVICE: notification-service
     ports:
-      - "9100:9090"
-      - "9101:9095"
+      - "9100:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "tempo:4317"
+    depends_on:
+      tempo: { condition: service_healthy }
+
+  routing-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: routing-service
+    ports:
+      - "9101:9095"   # metrics
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "tempo:4317"
+    depends_on:
+      tempo: { condition: service_healthy }
+
+  reconciliation-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: reconciliation-service
+    ports:
+      - "9102:9095"   # metrics
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "tempo:4317"
+    depends_on:
+      tempo: { condition: service_healthy }
 
   audit-service:
     build:
@@ -178,15 +408,56 @@ services:
     depends_on:
       redpanda: { condition: service_healthy }
 
-  migrate:
-    image: postgres:16-alpine
-    command:
-      - sh
-      - -c
-      - "until pg_isready -h postgres -U switch; do sleep 1; done && psql '$$POSTGRES_DSN' -f /schema/0001_init.sql"
+  # ---------------------------------------------------------------------------
+  # Participant Portal API
+  # ---------------------------------------------------------------------------
+  # In production, traffic reaches this service through Kong → Authentik
+  # forward-auth. Authentik validates the session and injects identity headers
+  # (X-authentik-uid, X-authentik-username, X-authentik-groups, X-User-Role,
+  # X-Participant-Id). Kong proxies portal requests on port 8000.
+  #
+  # Access the portal via:  http://localhost:8000/portal/
+  # Direct API (dev only):  http://localhost:8090/api/v1/me
+  portal-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: portal-api
+    ports:
+      - "8090:8080"
     environment:
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9095"
       POSTGRES_DSN: "postgres://switch:switch@postgres:5432/switch?sslmode=disable"
-    volumes:
-      - ../../migrations/postgres/0001_init.sql:/schema/0001_init.sql
+      OTLP_ENDPOINT: "tempo:4317"
+      PORTAL_STATIC_DIR: "/portal/dist"
+      # Fixed dev CSRF secret so tokens survive container restarts.
+      # In production, replace with: openssl rand -hex 32
+      CSRF_SECRET: "cafecafe00000000000000000000000000000000000000000000000000000000"
+      # Set to the SPA origin if the frontend runs on a different port/host, e.g.:
+      # PORTAL_ORIGIN: "http://localhost:5173"
+      PORTAL_ORIGIN: ""
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      tempo: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+
+volumes:
+  # Holds the generated dev CA + server/client TLS certificates.
+  # Kong reads from this volume; copy client certs out with:
+  #   docker compose cp certgen:/certs/client-bank-a-cert.pem .
+  #   docker compose cp certgen:/certs/client-bank-a-key.pem .
+  certs:
+  authentik-db:
+  authentik-redis:
+  authentik-media:
+  authentik-templates:

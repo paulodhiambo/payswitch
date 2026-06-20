@@ -34,6 +34,7 @@ func (s *ValidateStep) Execute(ctx context.Context, p *domain.Payment) error {
 	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusValidated); err != nil {
 		return fmt.Errorf("update status to VALIDATED: %w", err)
 	}
+	p.Status = domain.StatusValidated
 	return nil
 }
 
@@ -57,6 +58,7 @@ func (s *LookupStep) Execute(ctx context.Context, p *domain.Payment) error {
 	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusValidated); err != nil {
 		return fmt.Errorf("update status after BIC lookup: %w", err)
 	}
+	p.Status = domain.StatusValidated
 	return nil
 }
 
@@ -72,12 +74,18 @@ type RouteStep struct {
 func (s *RouteStep) Name() string { return "route" }
 
 func (s *RouteStep) Execute(ctx context.Context, p *domain.Payment) error {
-	fee, estimatedMs, err := s.Client.FindRouteClient(ctx, p.SourceBIC, p.DestinationBIC, p.Currency)
+	fee, estimatedMs, err := s.Client.FindRoute(ctx, p.SourceBIC, p.DestinationBIC, p.Currency)
 	if err != nil {
 		return fmt.Errorf("find route: %w", err)
 	}
+	p.RouteFee = fee
+	p.RouteEstimatedMs = estimatedMs
+	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusRouted); err != nil {
+		return fmt.Errorf("update status to ROUTED: %w", err)
+	}
+	p.Status = domain.StatusRouted
 	slog.Debug("route found", "source", p.SourceBIC, "dest", p.DestinationBIC, "fee", fee, "estimated_ms", estimatedMs)
-	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusValidated)
+	return nil
 }
 
 func (s *RouteStep) Compensate(_ context.Context, _ *domain.Payment) error {
@@ -92,14 +100,16 @@ type QuoteStep struct {
 func (s *QuoteStep) Name() string { return "quote" }
 
 func (s *QuoteStep) Execute(ctx context.Context, p *domain.Payment) error {
-	quoteID, fee, total, err := s.Client.GetQuoteClient(ctx, p.SourceBIC, p.DestinationBIC, p.Amount, p.Currency)
+	quoteID, fee, total, err := s.Client.GetQuote(ctx, p.SourceBIC, p.DestinationBIC, p.Amount, p.Currency)
 	if err != nil {
 		return fmt.Errorf("get quote: %w", err)
 	}
+	p.QuoteID = &quoteID
 	slog.Debug("quote obtained", "quote_id", quoteID, "fee", fee, "total", total)
 	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusQuoted); err != nil {
 		return fmt.Errorf("update status to QUOTED: %w", err)
 	}
+	p.Status = domain.StatusQuoted
 	return nil
 }
 
@@ -125,6 +135,7 @@ func (s *ScreenStep) Execute(ctx context.Context, p *domain.Payment) error {
 	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusScreened); err != nil {
 		return fmt.Errorf("update status to SCREENED: %w", err)
 	}
+	p.Status = domain.StatusScreened
 	return nil
 }
 
@@ -151,6 +162,7 @@ func (s *ReserveStep) Execute(ctx context.Context, p *domain.Payment) error {
 	if err := s.Repo.MarkReserved(ctx, p.ID, ttl); err != nil {
 		return fmt.Errorf("mark reserved: %w", err)
 	}
+	p.Status = domain.StatusReserved
 	return nil
 }
 
@@ -173,6 +185,7 @@ func (s *CommitStep) Execute(ctx context.Context, p *domain.Payment) error {
 	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusCommitted); err != nil {
 		return fmt.Errorf("update status to COMMITTED: %w", err)
 	}
+	p.Status = domain.StatusCommitted
 	return nil
 }
 
@@ -192,7 +205,11 @@ func (s *SettleStep) Execute(ctx context.Context, p *domain.Payment) error {
 	if err := s.Client.Submit(ctx, p); err != nil {
 		return fmt.Errorf("submit for settlement: %w", err)
 	}
-	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusCommitted)
+	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusSettled); err != nil {
+		return fmt.Errorf("update status to SETTLED: %w", err)
+	}
+	p.Status = domain.StatusSettled
+	return nil
 }
 
 func (s *SettleStep) Compensate(ctx context.Context, p *domain.Payment) error {
@@ -207,7 +224,7 @@ type RecordReconciliationStep struct {
 func (s *RecordReconciliationStep) Name() string { return "record_reconciliation" }
 
 func (s *RecordReconciliationStep) Execute(ctx context.Context, p *domain.Payment) error {
-	if err := s.Client.AddRecordClient(ctx, p.ID, p.SourceBIC, p.DestinationBIC, p.Amount, p.Currency, string(p.Status)); err != nil {
+	if err := s.Client.AddRecord(ctx, p.ID, p.SourceBIC, p.DestinationBIC, p.Amount, p.Currency, string(p.Status)); err != nil {
 		slog.Warn("reconciliation record failed", "payment_id", p.ID, "error", err)
 	}
 	return nil
@@ -224,11 +241,11 @@ type NotifyStep struct {
 func (s *NotifyStep) Name() string { return "notify" }
 
 func (s *NotifyStep) Execute(ctx context.Context, p *domain.Payment) error {
-	if err := s.Client.NotifyClient(ctx, p.SourceBIC, "webhook", "Payment Processed",
+	if err := s.Client.Notify(ctx, p.SourceBIC, "webhook", "Payment Processed",
 		"Your payment has been processed.", p.ID, string(p.Status)); err != nil {
 		slog.Warn("notify source failed", "payment_id", p.ID, "error", err)
 	}
-	if err := s.Client.NotifyClient(ctx, p.DestinationBIC, "webhook", "Payment Received",
+	if err := s.Client.Notify(ctx, p.DestinationBIC, "webhook", "Payment Received",
 		"A payment has been credited to your account.", p.ID, string(p.Status)); err != nil {
 		slog.Warn("notify destination failed", "payment_id", p.ID, "error", err)
 	}

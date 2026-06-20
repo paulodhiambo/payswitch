@@ -13,5 +13,13 @@ CREATE TABLE payment (
     expires_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    uetr            TEXT,
+    instr_id        TEXT,
+    charge_bearer   CHAR(4),
+    sttlm_dt        DATE,
+    debtor_name     TEXT,
+    creditor_name   TEXT,
+    purpose_code    CHAR(4),
+    remittance_info TEXT,
     UNIQUE (source_bic, end_to_end_id)
 );

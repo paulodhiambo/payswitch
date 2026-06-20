@@ -14,7 +14,8 @@ func NewGRPCClient(client reconciliationpb.ReconciliationClient) *GRPCClient {
 	return &GRPCClient{client: client}
 }
 
-func (c *GRPCClient) AddRecordClient(ctx context.Context, paymentID, sourceBIC, destBIC string, amount int64, currency, status string) error {
+// AddRecord satisfies ports.ReconciliationClient.
+func (c *GRPCClient) AddRecord(ctx context.Context, paymentID, sourceBIC, destBIC string, amount int64, currency, status string) error {
 	_, err := c.client.AddRecord(ctx, &reconciliationpb.AddRecordRequest{
 		Record: &reconciliationpb.Record{
 			PaymentId: paymentID,
@@ -23,22 +24,6 @@ func (c *GRPCClient) AddRecordClient(ctx context.Context, paymentID, sourceBIC, 
 			Amount:    amount,
 			Currency:  currency,
 			Status:    status,
-		},
-	})
-	return err
-}
-
-func (c *GRPCClient) AddRecord(ctx context.Context, r Record) error {
-	_, err := c.client.AddRecord(ctx, &reconciliationpb.AddRecordRequest{
-		Record: &reconciliationpb.Record{
-			PaymentId:   r.PaymentID,
-			SourceBic:   r.SourceBIC,
-			DestBic:     r.DestBIC,
-			Amount:      r.Amount,
-			Currency:    r.Currency,
-			Status:      r.Status,
-			Matched:     r.Matched,
-			Discrepancy: r.Discrepancy,
 		},
 	})
 	return err
@@ -55,7 +40,7 @@ func NewGRPCServer(svc *Service) *GRPCServer {
 
 func (s *GRPCServer) AddRecord(ctx context.Context, req *reconciliationpb.AddRecordRequest) (*reconciliationpb.AddRecordResponse, error) {
 	r := req.GetRecord()
-	s.svc.AddRecord(Record{
+	s.svc.Insert(Record{
 		PaymentID:   r.GetPaymentId(),
 		SourceBIC:   r.GetSourceBic(),
 		DestBIC:     r.GetDestBic(),

@@ -20,8 +20,8 @@ type NotificationRequest struct {
 	Status        string
 }
 
-func (s *Service) NotifyClient(ctx context.Context, participantID, channel, title, body, paymentID, status string) error {
-	return s.Notify(ctx, &NotificationRequest{
+func (s *Service) Notify(ctx context.Context, participantID, channel, title, body, paymentID, status string) error {
+	return s.notify(ctx, &NotificationRequest{
 		ParticipantID: participantID,
 		Channel:       channel,
 		Title:         title,
@@ -31,7 +31,7 @@ func (s *Service) NotifyClient(ctx context.Context, participantID, channel, titl
 	})
 }
 
-func (s *Service) Notify(ctx context.Context, req *NotificationRequest) error {
+func (s *Service) notify(ctx context.Context, req *NotificationRequest) error {
 	log.Printf("[NOTIFY] participant=%s channel=%s title=%q payment=%s status=%s",
 		req.ParticipantID, req.Channel, req.Title, req.PaymentID, req.Status)
 	return nil

@@ -26,6 +26,29 @@ jobs:
       - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
         continue-on-error: true
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: portal/package-lock.json
+      - name: Install dependencies
+        run: |
+          cd portal
+          npm ci
+      - name: Lint
+        run: |
+          cd portal
+          npm run lint
+      - name: Build
+        run: |
+          cd portal
+          npm run build
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -65,13 +88,15 @@ jobs:
       matrix:
         service:
           - gateway
-          - settlement-service
-          - lookup-service
-          - audit-service
           - compliance-service
+          - lookup-service
+          - settlement-service
+          - quoting-service
+          - notification-service
           - routing-service
           - reconciliation-service
-          - certificate-service
+          - audit-service
+          - portal-api
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -89,6 +114,8 @@ jobs:
           file: deploy/docker/Dockerfile
           build-args: SERVICE=${{ matrix.service }}
           push: true
-          tags: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }},ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+          tags: |
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

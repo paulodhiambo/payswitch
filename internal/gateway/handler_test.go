@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"switch/internal/orchestrator/domain"
 	"switch/internal/orchestrator/saga"
 	"switch/internal/participant"
+	"switch/pkg/iso20022"
 	"switch/pkg/middleware"
 )
 
@@ -78,6 +81,10 @@ func (r *memRepo) MarkReserved(_ context.Context, id string, ttl time.Duration) 
 		p.Status = domain.StatusReserved
 	}
 	return nil
+}
+
+func (r *memRepo) CreateWithEvent(_ context.Context, p *domain.Payment) error {
+	return r.Create(context.Background(), p)
 }
 
 func setupHandler() http.Handler {
@@ -207,4 +214,145 @@ func TestGetPayment_NotFound(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestSubmitPayment_ISO20022Fields(t *testing.T) {
+	handler := setupHandler()
+
+	body := map[string]any{
+		"end_to_end_id":    "e2e-iso-001",
+		"destination_bic":  "BANKDEFF",
+		"dest_account":     "ACC-B",
+		"amount":           300_00,
+		"currency":         "USD",
+		"uetr":             "550e8400-e29b-41d4-a716-446655440000",
+		"instruction_id":   "INSTR-001",
+		"charge_bearer":    "SLEV",
+		"settlement_date":  "2026-06-20",
+		"debtor_name":      "Alice Smith",
+		"creditor_name":    "Bob Jones",
+		"purpose_code":     "SALA",
+		"remittance_info":  "Invoice #1234",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp gateway.PaymentResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.Equal(t, "550e8400-e29b-41d4-a716-446655440000", resp.UETR)
+	require.Equal(t, "INSTR-001", resp.InstructionID)
+	require.Equal(t, "Alice Smith", resp.DebtorName)
+	require.Equal(t, "Bob Jones", resp.CreditorName)
+	require.Equal(t, "SALA", resp.PurposeCode)
+	require.Equal(t, "Invoice #1234", resp.RemittanceInfo)
+	require.NotEmpty(t, resp.ISOStatus)
+}
+
+func TestSubmitPayment_ISOStatusField(t *testing.T) {
+	handler := setupHandler()
+
+	body := map[string]any{
+		"end_to_end_id":   "e2e-iso-002",
+		"destination_bic": "BANKDEFF",
+		"dest_account":    "ACC-B",
+		"amount":          100_00,
+		"currency":        "USD",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp gateway.PaymentResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.NotEmpty(t, resp.UETR) // auto-generated
+	require.NotEmpty(t, resp.ISOStatus)
+	require.Equal(t, "ACCP", resp.ISOStatus) // COMMITTED → ACCP
+}
+
+func TestSubmitPayment_Pacs008XML(t *testing.T) {
+	handler := setupHandler()
+
+	doc := iso20022.Document{
+		FIToFICstmrCdtTrf: iso20022.FIToFICustomerCreditTransfer{
+			GrpHdr: iso20022.GroupHeader{
+				MsgID:         "MSG-XML-001",
+				CreDtTm:       "2026-06-20T10:00:00Z",
+				NbOfTxs:       "1",
+				IntrBkSttlmDt: "2026-06-20",
+				SttlmInf:      iso20022.SettlementInformation{SttlmMtd: "CLRG"},
+			},
+			CdtTrfTxInf: []iso20022.CreditTransferTransaction{
+				{
+					PmtID: iso20022.PaymentIdentification{
+						InstrID:    "INSTR-XML-001",
+						EndToEndID: "e2e-xml-001",
+						TxID:       "TX-001",
+						UETR:       "660e8400-e29b-41d4-a716-446655440000",
+					},
+					IntrBkSttlmAmt: iso20022.Amount{Value: 150.00, Ccy: "USD"},
+					ChrgBr:         "SHAR",
+					Dbtr:           iso20022.PartyIdentification{Nm: "XML Debtor"},
+					DbtrAcct:       iso20022.AccountIdentification{Othr: &iso20022.GenericAccount{ID: "ACC-A"}},
+					DbtrAgt:        iso20022.FinancialInstitution{FinInstnID: iso20022.FinancialInstitutionID{BICFI: "BANKUS33"}},
+					CdtrAgt:        iso20022.FinancialInstitution{FinInstnID: iso20022.FinancialInstitutionID{BICFI: "BANKDEFF"}},
+					Cdtr:           iso20022.PartyIdentification{Nm: "XML Creditor"},
+					CdtrAcct:       iso20022.AccountIdentification{Othr: &iso20022.GenericAccount{ID: "ACC-B"}},
+				},
+			},
+		},
+	}
+	xmlBytes, err := xml.Marshal(doc)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(xmlBytes))
+	req.Header.Set("Content-Type", "application/xml")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp gateway.PaymentResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.Equal(t, "e2e-xml-001", resp.EndToEndID)
+	require.Equal(t, "660e8400-e29b-41d4-a716-446655440000", resp.UETR)
+	require.Equal(t, "XML Debtor", resp.DebtorName)
+	require.Equal(t, "XML Creditor", resp.CreditorName)
+	require.Equal(t, int64(150_00), resp.Amount)
+}
+
+func TestSubmitPayment_Pacs002XMLResponse(t *testing.T) {
+	handler := setupHandler()
+
+	body := map[string]any{
+		"end_to_end_id":   "e2e-pacs002-001",
+		"destination_bic": "BANKDEFF",
+		"dest_account":    "ACC-B",
+		"amount":          200_00,
+		"currency":        "USD",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/xml")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+	require.Contains(t, w.Header().Get("Content-Type"), "application/xml")
+
+	body2 := w.Body.String()
+	require.True(t, strings.Contains(body2, "FIToFIPmtStsRpt"), "expected pacs.002 element in response")
+	require.True(t, strings.Contains(body2, "e2e-pacs002-001"), "expected EndToEndID in pacs.002")
 }

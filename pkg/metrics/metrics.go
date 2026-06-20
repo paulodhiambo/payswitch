@@ -3,9 +3,9 @@ package metrics
 import (
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -51,19 +51,28 @@ var (
 			Help: "Number of active payments in flight",
 		},
 	)
+
+	registerOnce sync.Once
 )
 
 func Init() {
-	prometheus.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		HTTPRequestsTotal,
-		HTTPRequestDuration,
-		PaymentsTotal,
-		SagaStepsTotal,
-		OutboxEventsTotal,
-		ActivePayments,
-	)
+	registerOnce.Do(func() {
+		registerSafely(HTTPRequestsTotal)
+		registerSafely(HTTPRequestDuration)
+		registerSafely(PaymentsTotal)
+		registerSafely(SagaStepsTotal)
+		registerSafely(OutboxEventsTotal)
+		registerSafely(ActivePayments)
+	})
+}
+
+func registerSafely(c prometheus.Collector) {
+	err := prometheus.Register(c)
+	if err != nil {
+		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+			log.Panicf("failed to register metric: %v", err)
+		}
+	}
 }
 
 func Listen(addr string) {

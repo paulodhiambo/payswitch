@@ -2,6 +2,9 @@ _format_version: "3.0"
 _transform: true
 
 services:
+  # ---------------------------------------------------------------------------
+  # Bank Payment API (mTLS on :8443)
+  # ---------------------------------------------------------------------------
   - name: payment-service
     host: gateway
     port: 8080
@@ -30,3 +33,85 @@ services:
         strip_path: false
         methods:
           - GET
+
+  # ---------------------------------------------------------------------------
+  # Portal API — protected by Authentik forward-auth (HTTP on :8000)
+  # ---------------------------------------------------------------------------
+  - name: portal-api-service
+    host: portal-api
+    port: 8080
+    protocol: http
+    routes:
+      - name: portal-api
+        paths:
+          - /portal/api
+        strip_path: false
+        protocols:
+          - http
+        plugins:
+          # Forward-auth: Kong sends a sub-request to Authentik's outpost.
+          # On success Authentik returns 200 with X-authentik-* headers that
+          # Kong copies upstream to portal-api.
+          - name: forward-auth
+            config:
+              http_method: GET
+              address: "http://authentik-server:9000/outpost.goauthentik.io/auth/nginx"
+              trust_response_headers:
+                - X-authentik-uid
+                - X-authentik-username
+                - X-authentik-name
+                - X-authentik-email
+                - X-authentik-groups
+                - X-User-Role
+                - X-Participant-Id
+          - name: rate-limiting
+            config:
+              minute: 300
+              policy: local
+
+  # ---------------------------------------------------------------------------
+  # Portal SPA static files — also behind Authentik (HTTP on :8000)
+  # ---------------------------------------------------------------------------
+  - name: portal-spa-service
+    host: portal-api
+    port: 8080
+    protocol: http
+    routes:
+      - name: portal-spa
+        paths:
+          - /portal
+        strip_path: false
+        protocols:
+          - http
+        plugins:
+          - name: forward-auth
+            config:
+              http_method: GET
+              address: "http://authentik-server:9000/outpost.goauthentik.io/auth/nginx"
+              trust_response_headers:
+                - X-authentik-uid
+                - X-authentik-username
+                - X-authentik-name
+                - X-authentik-email
+                - X-authentik-groups
+                - X-User-Role
+                - X-Participant-Id
+
+  # ---------------------------------------------------------------------------
+  # Authentik itself — login/callback/static (unauthenticated, HTTP on :8000)
+  # ---------------------------------------------------------------------------
+  - name: authentik-service
+    host: authentik-server
+    port: 9000
+    protocol: http
+    routes:
+      - name: authentik-auth
+        paths:
+          - /outpost.goauthentik.io
+          - /if/
+          - /api/v3/
+          - /application/o/
+          - /-/
+        strip_path: false
+        protocols:
+          - http

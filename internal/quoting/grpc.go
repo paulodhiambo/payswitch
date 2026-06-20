@@ -17,7 +17,7 @@ func NewGRPCServer(svc *Service) *GRPCServer {
 }
 
 func (s *GRPCServer) GetQuote(ctx context.Context, req *quotingpb.QuoteRequest) (*quotingpb.QuoteResponse, error) {
-	q, err := s.svc.GetQuote(ctx, req.GetSourceBic(), req.GetDestinationBic(), req.GetAmount(), req.GetCurrency())
+	q, err := s.svc.getQuote(ctx, req.GetSourceBic(), req.GetDestinationBic(), req.GetAmount(), req.GetCurrency())
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func NewGRPCClient(client quotingpb.QuotingClient) *GRPCClient {
 	return &GRPCClient{client: client}
 }
 
-func (c *GRPCClient) GetQuoteClient(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (string, int64, int64, error) {
+func (c *GRPCClient) GetQuote(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (string, int64, int64, error) {
 	resp, err := c.client.GetQuote(ctx, &quotingpb.QuoteRequest{
 		SourceBic:      sourceBIC,
 		DestinationBic: destBIC,

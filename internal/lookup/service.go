@@ -37,10 +37,11 @@ func New(cache Cache) *Service {
 }
 
 func (s *Service) seedDefaults() {
+	currencies := []string{"USD", "EUR", "GBP"}
 	for _, b := range []*BankInfo{
-		{BIC: "BANKUS33", Name: "Bank A US", Country: "US", Supported: []string{"USD"}, RoutingInfo: "CHIPS:1234"},
-		{BIC: "BANKDEFF", Name: "Bank B DE", Country: "DE", Supported: []string{"EUR"}, RoutingInfo: "SEPA:DE123"},
-		{BIC: "BANKGB2L", Name: "Bank C UK", Country: "GB", Supported: []string{"GBP"}, RoutingInfo: "FPS:4567"},
+		{BIC: "BANKUS33", Name: "First National Bank",    Country: "US", Supported: currencies, RoutingInfo: "CHIPS:1234"},
+		{BIC: "BANKDEFF", Name: "Deutsche Exchange Bank", Country: "DE", Supported: currencies, RoutingInfo: "SEPA:DE123"},
+		{BIC: "BANKGB2L", Name: "London Clearing Bank",   Country: "GB", Supported: currencies, RoutingInfo: "FPS:4567"},
 	} {
 		s.banks[b.BIC] = b
 	}

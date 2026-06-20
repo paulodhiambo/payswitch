@@ -23,4 +23,13 @@ type Payment struct {
 	ExpiresAt      pgtype.Timestamptz
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	// ISO 20022 fields (added by migration 0002)
+	UETR           pgtype.Text
+	InstrID        pgtype.Text
+	ChargeBearer   pgtype.Text
+	SttlmDt        pgtype.Date
+	DebtorName     pgtype.Text
+	CreditorName   pgtype.Text
+	PurposeCode    pgtype.Text
+	RemittanceInfo pgtype.Text
 }

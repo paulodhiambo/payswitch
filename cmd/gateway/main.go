@@ -19,6 +19,8 @@ import (
 	lookuppb "switch/api/proto/lookup"
 	notificationpb "switch/api/proto/notification"
 	quotingpb "switch/api/proto/quoting"
+	reconciliationpb "switch/api/proto/reconciliation"
+	routingpb "switch/api/proto/routing"
 	settlementpb "switch/api/proto/settlement"
 	"switch/internal/compliance"
 	"switch/internal/gateway"
@@ -70,13 +72,15 @@ func main() {
 
 	repo := db.NewPaymentRepo(pool)
 	bank := saga.NewMockBankClient()
-	bank.SetBalance("ACC-A", 1_000_00)
-	bank.SetBalance("ACC-B", 0)
+	bank.SetBalance("ACC-A", 10_000_000)
+	bank.SetBalance("ACC-B", 10_000_000)
+	bank.SetBalance("ACC-C", 10_000_000)
 
 	participantReg := participant.NewRegistry()
 	for _, p := range []*participant.Participant{
-		{ID: "bank-a", Name: "Bank A", BIC: "BANKUS33", Account: "ACC-A"},
-		{ID: "bank-b", Name: "Bank B", BIC: "BANKDEFF", Account: "ACC-B"},
+		{ID: "bank-a", Name: "First National Bank",    BIC: "BANKUS33", Account: "ACC-A"},
+		{ID: "bank-b", Name: "Deutsche Exchange Bank", BIC: "BANKDEFF", Account: "ACC-B"},
+		{ID: "bank-c", Name: "London Clearing Bank",   BIC: "BANKGB2L", Account: "ACC-C"},
 	} {
 		if err := participantReg.Register(p); err != nil {
 			log.Fatalf("register participant: %v", err)
@@ -124,7 +128,7 @@ func main() {
 			return nil
 		})
 	}
-	if cfg.KafkaBrokers != nil && len(cfg.KafkaBrokers) > 0 {
+	if len(cfg.KafkaBrokers) > 0 {
 		h.AddHealthCheck("kafka", func(ctx context.Context) error {
 			return nil // connectivity verified at producer init
 		})
@@ -219,43 +223,66 @@ func resolveNotificationClient(cfg *config.Config) ports.NotificationClient {
 	return notification.New()
 }
 
-func resolveRoutingClient(_ *config.Config) ports.RoutingClient {
+func resolveRoutingClient(cfg *config.Config) ports.RoutingClient {
+	if cfg.RoutingAddr != "" {
+		conn, err := grpc.NewClient(cfg.RoutingAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect routing: %v", err)
+		}
+		return routing.NewGRPCClient(routingpb.NewRoutingClient(conn))
+	}
 	return routing.New()
 }
 
-func resolveReconciliationClient(_ *config.Config) ports.ReconciliationClient {
+func resolveReconciliationClient(cfg *config.Config) ports.ReconciliationClient {
+	if cfg.ReconciliationAddr != "" {
+		conn, err := grpc.NewClient(cfg.ReconciliationAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect reconciliation: %v", err)
+		}
+		return reconciliation.NewGRPCClient(reconciliationpb.NewReconciliationClient(conn))
+	}
 	return reconciliation.New()
 }
 
 func kongAuthMiddleware(reg *participant.Registry) func(http.Handler) http.Handler {
-	devParticipant, devErr := reg.GetByID(context.Background(), "bank-a")
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			subject := r.Header.Get("X-Participant-Id")
 			if subject != "" {
+				// Kong set the header: extract the CN and reject if unknown.
 				participantID := parseCN(subject)
-				if _, err := reg.GetByID(r.Context(), participantID); err == nil {
-					ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, participantID)
-					next.ServeHTTP(w, r.WithContext(ctx))
+				if _, err := reg.GetByID(r.Context(), participantID); err != nil {
+					log.Printf("kong auth: unknown participant %q from subject %q", participantID, subject)
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
-				log.Printf("kong auth: unknown participant %q from subject %q, falling back to dev", participantID, subject)
-			}
-			if devErr == nil {
-				ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, devParticipant.ID)
+				ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, participantID)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			// No X-Participant-Id: dev-mode fallback (Kong not in the path).
+			p, err := reg.GetByID(r.Context(), "bank-a")
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, p.ID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
+// parseCN extracts the CN value from an RFC 4514 distinguished name.
+// RFC 4514 escapes literal commas inside values as \, so we must not split
+// on those when tokenising the RDN sequence.
 func parseCN(subject string) string {
-	for _, part := range strings.Split(subject, ",") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "CN=") {
-			return strings.TrimPrefix(part, "CN=")
+	const escapedComma = "\x00"
+	s := strings.ReplaceAll(subject, `\,`, escapedComma)
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(strings.ReplaceAll(part, escapedComma, ","))
+		if v, ok := strings.CutPrefix(part, "CN="); ok {
+			return v
 		}
 	}
 	return subject
@@ -275,5 +302,4 @@ func metricsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
 
