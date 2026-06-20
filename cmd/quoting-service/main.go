@@ -11,8 +11,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	compliancepb "switch/api/proto/compliance"
-	"switch/internal/compliance"
+	quotingpb "switch/api/proto/quoting"
+	"switch/internal/quoting"
 	"switch/pkg/config"
 	"switch/pkg/metrics"
 	"switch/pkg/telemetry"
@@ -28,13 +28,14 @@ func main() {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("compliance-service")
+	logger := telemetry.InitLogger("quoting-service")
 
 	metrics.Listen(cfg.MetricsAddr)
 
-	svc := compliance.New()
+	svc := quoting.New()
+
 	grpcSrv := grpc.NewServer()
-	compliancepb.RegisterComplianceServer(grpcSrv, compliance.NewGRPCServer(svc))
+	quotingpb.RegisterQuotingServer(grpcSrv, quoting.NewGRPCServer(svc))
 	reflection.Register(grpcSrv)
 
 	addr := cfg.GRPCAddr
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("compliance-service gRPC listening", "addr", addr)
+		logger.Info("quoting-service gRPC listening", "addr", addr)
 		if err := grpcSrv.Serve(lis); err != nil {
 			logger.Error("serve", "error", err)
 			os.Exit(1)
@@ -56,6 +57,6 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logger.Info("compliance-service shutting down")
+	logger.Info("quoting-service shutting down")
 	grpcSrv.GracefulStop()
 }

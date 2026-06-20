@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"log"
 	"net/http"
 	"os"
@@ -11,8 +13,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
+	compliancepb "switch/api/proto/compliance"
 	"switch/internal/compliance"
+	"switch/internal/orchestrator/ports"
 	"switch/internal/gateway"
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
@@ -20,6 +26,7 @@ import (
 	"switch/internal/participant"
 	"switch/pkg/config"
 	"switch/pkg/eventbus"
+	"switch/pkg/metrics"
 	"switch/pkg/middleware"
 	"switch/pkg/outbox"
 	"switch/pkg/telemetry"
@@ -67,7 +74,7 @@ func main() {
 		}
 	}
 
-	complianceClient := compliance.New()
+	complianceClient := resolveComplianceClient(cfg)
 
 	paymentSaga := saga.New(
 		&saga.ValidateStep{Repo: repo},
@@ -79,7 +86,11 @@ func main() {
 	h := gateway.NewHandler(repo, paymentSaga, participantReg)
 
 	r := chi.NewRouter()
+
+	r.Use(metricsMiddleware)
 	h.Register(r)
+
+	metrics.Listen(cfg.MetricsAddr)
 
 	if len(cfg.KafkaBrokers) > 0 {
 		producer := eventbus.NewProducer(cfg.KafkaBrokers)
@@ -94,18 +105,30 @@ func main() {
 	go sw.Run(ctx, 30*time.Second)
 	log.Printf("reservation sweeper started (poll interval: 30s)")
 
+	tlsConfig, err := buildTLSConfig(cfg)
+	if err != nil {
+		log.Fatalf("tls config: %v", err)
+	}
+
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
 		Handler:      handlerWithDevParticipant(r, participantReg),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
+		TLSConfig:    tlsConfig,
 	}
 
 	go func() {
 		log.Printf("gateway listening on %s (dev mode: bank-a injected)", cfg.HTTPAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("serve: %v", err)
+		if tlsConfig != nil {
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("serve: %v", err)
+			}
+		} else {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("serve: %v", err)
+			}
 		}
 	}()
 
@@ -114,13 +137,51 @@ func main() {
 	<-quit
 
 	log.Print("shutting down...")
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
+	srv.Shutdown(shutdownCtx)
+}
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("forced shutdown: %v", err)
+func resolveComplianceClient(cfg *config.Config) ports.ComplianceClient {
+	if cfg.ComplianceAddr != "" {
+		conn, err := grpc.NewClient(cfg.ComplianceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect compliance: %v", err)
+		}
+		return compliance.NewGRPCClient(compliancepb.NewComplianceClient(conn))
 	}
+	return compliance.New()
+}
+
+func buildTLSConfig(cfg *config.Config) (*tls.Config, error) {
+	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+		return nil, nil
+	}
+	cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if cfg.TLSCAFile != "" {
+		caData, err := os.ReadFile(cfg.TLSCAFile)
+		if err != nil {
+			return nil, err
+		}
+		pool.AppendCertsFromPEM(caData)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    pool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metrics.HTTPRequestsTotal.WithLabelValues(r.Method, r.URL.Path, "").Inc()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handlerWithDevParticipant(next http.Handler, reg *participant.Registry) http.Handler {

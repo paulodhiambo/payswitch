@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/quoting;quotingpb";
+
+service Quoting {
+  rpc GetQuote(QuoteRequest) returns (QuoteResponse);
+  rpc AcceptQuote(AcceptQuoteRequest) returns (AcceptQuoteResponse);
+}
+
+message QuoteRequest {
+  string source_bic = 1;
+  string destination_bic = 2;
+  int64 amount = 3;
+  string currency = 4;
+}
+
+message Quote {
+  string id = 1;
+  string source_bic = 2;
+  string destination_bic = 3;
+  int64 amount = 4;
+  string currency = 5;
+  int64 fee = 6;
+  int64 total = 7;
+  int64 estimated_latency_ms = 8;
+  string expires_at = 9;
+  bool accepted = 10;
+}
+
+message QuoteResponse {
+  Quote quote = 1;
+}
+
+message AcceptQuoteRequest {
+  string quote_id = 1;
+}
+
+message AcceptQuoteResponse {
+  bool accepted = 1;
+}

@@ -11,8 +11,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	compliancepb "switch/api/proto/compliance"
-	"switch/internal/compliance"
+	notificationpb "switch/api/proto/notification"
+	"switch/internal/notification"
 	"switch/pkg/config"
 	"switch/pkg/metrics"
 	"switch/pkg/telemetry"
@@ -28,13 +28,14 @@ func main() {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("compliance-service")
+	logger := telemetry.InitLogger("notification-service")
 
 	metrics.Listen(cfg.MetricsAddr)
 
-	svc := compliance.New()
+	svc := notification.New()
+
 	grpcSrv := grpc.NewServer()
-	compliancepb.RegisterComplianceServer(grpcSrv, compliance.NewGRPCServer(svc))
+	notificationpb.RegisterNotificationServer(grpcSrv, notification.NewGRPCServer(svc))
 	reflection.Register(grpcSrv)
 
 	addr := cfg.GRPCAddr
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("compliance-service gRPC listening", "addr", addr)
+		logger.Info("notification-service gRPC listening", "addr", addr)
 		if err := grpcSrv.Serve(lis); err != nil {
 			logger.Error("serve", "error", err)
 			os.Exit(1)
@@ -56,6 +57,6 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logger.Info("compliance-service shutting down")
+	logger.Info("notification-service shutting down")
 	grpcSrv.GracefulStop()
 }

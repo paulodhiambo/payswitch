@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// LedgerWriter records settlement entries for audit trail.
+type LedgerWriter interface {
+	WriteSettlement(ctx context.Context, bic, paymentID, eventType, payload string, amount int64) error
+}
+
 type SettlementEntry struct {
 	PaymentID     string
 	SourceBIC     string
@@ -29,6 +34,7 @@ type Window struct {
 	interval time.Duration
 	maxSize  int
 	closed   bool
+	Ledger   LedgerWriter
 }
 
 func NewWindow(interval time.Duration, maxSize int) *Window {
@@ -71,6 +77,19 @@ func (w *Window) Settle(ctx context.Context) ([]NetPosition, error) {
 
 	for _, pos := range positions {
 		log.Printf("[SETTLE] %s net %s %d", pos.BIC, pos.Currency, pos.Amount)
+	}
+
+	if w.Ledger != nil {
+		for _, e := range entries {
+			_ = w.Ledger.WriteSettlement(ctx, e.SourceBIC, e.PaymentID, "settlement.debit",
+				fmt.Sprintf(`{"amount":%d,"currency":"%s"}`, e.Amount, e.Currency), -e.Amount)
+			_ = w.Ledger.WriteSettlement(ctx, e.DestBIC, e.PaymentID, "settlement.credit",
+				fmt.Sprintf(`{"amount":%d,"currency":"%s"}`, e.Amount, e.Currency), e.Amount)
+		}
+		for _, pos := range positions {
+			_ = w.Ledger.WriteSettlement(ctx, pos.BIC, "net", "settlement.net",
+				fmt.Sprintf(`{"amount":%d,"currency":"%s"}`, pos.Amount, pos.Currency), pos.Amount)
+		}
 	}
 
 	return positions, nil

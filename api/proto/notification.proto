@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/notification;notificationpb";
+
+service Notification {
+  rpc Notify(NotificationRequest) returns (NotificationResponse);
+}
+
+message NotificationRequest {
+  string participant_id = 1;
+  string channel = 2;
+  string title = 3;
+  string body = 4;
+  string payment_id = 5;
+  string status = 6;
+}
+
+message NotificationResponse {
+  bool sent = 1;
+}

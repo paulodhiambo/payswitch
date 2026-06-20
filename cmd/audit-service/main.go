@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,12 +17,14 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	logger := slog.With("service", "audit-service")
 	handler := audit.NewEventHandler()
 
 	topics := []string{
@@ -36,13 +38,13 @@ func main() {
 	for _, topic := range topics {
 		t := topic
 		go func() {
-			log.Printf("audit-service consuming %s", t)
+			logger.Info("audit-service consuming", "topic", t)
 			err := eventbus.Consume(ctx, cfg.KafkaBrokers, t, "audit-service",
 				func(ctx context.Context, msg kafka.Message) error {
 					return handler.HandlePaymentEvent(ctx, t, msg.Value)
 				})
 			if err != nil && err != context.Canceled {
-				log.Printf("consumer %s error: %v", t, err)
+				logger.Error("consumer error", "topic", t, "error", err)
 			}
 		}()
 	}
@@ -51,6 +53,6 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Print("audit-service shutting down...")
+	logger.Info("audit-service shutting down")
 	cancel()
 }

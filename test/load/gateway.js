@@ -1,6 +1,5 @@
 import { check, sleep, group } from 'k6';
 import http from 'k6/http';
-import { SharedArray } from 'k6/data';
 import { randomString, randomIntBetween } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
 
 const BASE_URL = __ENV.GATEWAY_URL || 'http://localhost:8080';

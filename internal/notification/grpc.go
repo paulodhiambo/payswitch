@@ -1,0 +1,31 @@
+package notification
+
+import (
+	"context"
+
+	notificationpb "switch/api/proto/notification"
+)
+
+type GRPCServer struct {
+	notificationpb.UnimplementedNotificationServer
+	svc *Service
+}
+
+func NewGRPCServer(svc *Service) *GRPCServer {
+	return &GRPCServer{svc: svc}
+}
+
+func (s *GRPCServer) Notify(ctx context.Context, req *notificationpb.NotificationRequest) (*notificationpb.NotificationResponse, error) {
+	err := s.svc.Notify(ctx, &NotificationRequest{
+		ParticipantID: req.GetParticipantId(),
+		Channel:       req.GetChannel(),
+		Title:         req.GetTitle(),
+		Body:          req.GetBody(),
+		PaymentID:     req.GetPaymentId(),
+		Status:        req.GetStatus(),
+	})
+	if err != nil {
+		return &notificationpb.NotificationResponse{Sent: false}, nil
+	}
+	return &notificationpb.NotificationResponse{Sent: true}, nil
+}

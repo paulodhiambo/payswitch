@@ -17,6 +17,11 @@ resources:
   - redpanda.yaml
   - gateway.yaml
   - audit-service.yaml
+  - compliance-service.yaml
+  - lookup-service.yaml
+  - settlement-service.yaml
+  - quoting-service.yaml
+  - notification-service.yaml
   - hpa.yaml
   - networkpolicy.yaml
   - keda-scaledobject.yaml

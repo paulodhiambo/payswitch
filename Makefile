@@ -1,7 +1,12 @@
 .PHONY: build test vet proto sqlc tidy clean
 
+SERVICES := gateway compliance-service lookup-service settlement-service quoting-service notification-service audit-service certgen
+
 build:
-	go build -o bin/gateway ./cmd/gateway
+	@for svc in $(SERVICES); do \
+		echo "building bin/$$svc..."; \
+		go build -o "bin/$$svc" "./cmd/$$svc"; \
+	done
 
 test:
 	go test ./... -race -count=1
