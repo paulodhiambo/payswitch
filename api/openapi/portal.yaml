@@ -1,0 +1,1649 @@
+openapi: "3.0.3"
+info:
+  title: Participant Portal API
+  description: |
+    Backend-for-frontend (BFF) API consumed exclusively by the Participant
+    Portal React SPA. It is **not** the bank-to-switch payment API — that
+    is `gateway.yaml`, uses mTLS, and speaks ISO 20022. This API serves
+    *people* (browser sessions), not payment systems.
+
+    ## Authentication — Authentik Proxy Provider
+
+    All requests reach Portal API via the **Authentik Outpost** (reverse
+    proxy). Authentik validates the session cookie, runs the authentication
+    flow (username + password + TOTP) if there is no valid session, and
+    injects identity headers before forwarding to Portal API.
+
+    Portal API never validates sessions itself — it reads identity from
+    headers the Authentik outpost injects:
+
+    | Header                  | Source                        | Example                   |
+    |-------------------------|-------------------------------|---------------------------|
+    | `X-authentik-uid`       | Authentik user UUID           | `7f3a8c2d-...`            |
+    | `X-authentik-username`  | Username (email)              | `alice@equity.ke`         |
+    | `X-authentik-groups`    | Comma-separated group names   | `bank-admins,bank-viewers`|
+    | `X-User-Role`           | Property mapping expression   | `BANK_ADMIN`              |
+    | `X-Participant-Id`      | User attribute `participant_id`| `eqbl-ke-uuid` or `""`   |
+
+    If the Authentik outpost rejects the session it returns 302 (browser
+    navigation) or 401 (XHR) directly — Portal API is never reached.
+    Portal API also runs a `RequireAuthentikIdentity` middleware that
+    returns 401 if `X-authentik-uid` is empty, as defense-in-depth.
+
+    ## SPA auth lifecycle
+
+    The SPA makes ordinary HTTP requests — no auth library or Bearer token
+    is needed. The browser sends the Authentik session cookie automatically.
+
+    - **Login**: Authentik outpost redirects unauthenticated browsers to
+      the Authentik login page. After username + password + TOTP the
+      outpost redirects back to the originally requested URL.
+    - **Session expiry**: outpost returns 401 for XHR; the SPA intercepts
+      and redirects to `/outpost.goauthentik.io/start`.
+    ## CSRF
+
+    Session-cookie auth requires CSRF protection. Use the synchronizer
+    token pattern: `GET /api/v1/csrf-token` returns a signed token tied to
+    the session (not the cookie). Include it as `X-CSRF-Token` on all
+    state-changing requests. Portal API validates it before processing.
+
+    ## RBAC
+
+    Every handler derives scope from Authentik-injected headers, never from
+    request parameters.
+
+    | Role            | Scope                          |
+    |-----------------|--------------------------------|
+    | `SWITCH_ADMIN`  | All participants               |
+    | `SWITCH_OPS`    | All participants (read-only)   |
+    | `BANK_ADMIN`    | Own bank only                  |
+    | `BANK_OPERATOR` | Own bank only                  |
+    | `BANK_VIEWER`   | Own bank only (read-only)      |
+
+    For endpoints accepting a `bic` query parameter, `BANK_*` roles have
+    it silently overridden to their own BIC.
+
+    ## User management
+
+    `POST /api/v1/users` and `PATCH /api/v1/users/{id}/role` call the
+    Authentik REST API internally using a service account token. There is
+    no local user store in Portal API — identity lives in Authentik; the
+    `X-authentik-uid` header is the actor reference in the audit log.
+  version: "1.0.0"
+  contact:
+    name: Payment Switch Team
+
+servers:
+  - url: https://portal.payment-switch.example.com
+    description: Production (Authentik Outpost → portal-api)
+  - url: https://portal-sandbox.payment-switch.example.com
+    description: Sandbox (Authentik Outpost → portal-api)
+
+security:
+  - authentikSession: []
+
+tags:
+  - name: Identity
+    description: Current-user profile and CSRF token — echoes Authentik-injected claims
+  - name: Banks
+    description: Participant bank management (onboarding, status, certificates)
+  - name: Transactions
+    description: Cross-border payment transactions — list, detail, timeline, export
+  - name: Dashboard
+    description: Aggregated volume, latency, and abort-reason metrics
+  - name: Settlement
+    description: Interbank settlement windows
+  - name: Users
+    description: Portal user management (backed by Authentik REST API)
+  - name: Audit
+    description: Immutable audit log of all mutating actions
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+
+  /api/v1/csrf-token:
+    get:
+      summary: Issue a CSRF token
+      description: |
+        Returns a signed CSRF token bound to the current Authentik session.
+        The SPA calls this once on startup and stores the token in memory.
+        Include as `X-CSRF-Token` on all state-changing requests (POST,
+        PUT, PATCH, DELETE). Tokens expire with the session.
+      operationId: getCSRFToken
+      tags: [Identity]
+      responses:
+        "200":
+          description: CSRF token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: Opaque signed token; treat as an opaque string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me:
+    get:
+      summary: Current user profile
+      description: |
+        Returns the caller's identity derived from Authentik-injected
+        headers. The SPA calls this once on startup to populate its RBAC
+        context (role, participantId, bankName).
+
+        `bankName` is resolved from `X-Participant-Id` via the participant
+        service; it is null for switch staff (`X-Participant-Id` is empty).
+      operationId: getMe
+      tags: [Identity]
+      responses:
+        "200":
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Banks
+  # ---------------------------------------------------------------------------
+
+  /api/v1/banks:
+    get:
+      summary: List participant banks
+      description: |
+        Returns all registered participant banks.
+        **Roles**: `SWITCH_ADMIN`, `SWITCH_OPS`
+      operationId: listBanks
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/BankStatus"
+          description: Filter by onboarding/operational status
+      responses:
+        "200":
+          description: Paginated list of banks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BankListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      summary: Onboard a new participant bank
+      description: |
+        Creates a bank record and starts the onboarding state machine
+        (APPLICATION → SANDBOX → CERTIFICATION → PRODUCTION_ACTIVE).
+        **Roles**: `SWITCH_ADMIN`
+      operationId: createBank
+      tags: [Banks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBankRequest"
+      responses:
+        "201":
+          description: Bank created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bank"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: BIC already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/banks/{id}:
+    get:
+      summary: Get bank detail
+      description: |
+        **Roles**: `SWITCH_ADMIN`, `SWITCH_OPS` — any bank.
+        `BANK_*` — own bank only (enforced via `X-Participant-Id`).
+      operationId: getBank
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/BankIdParam"
+      responses:
+        "200":
+          description: Bank detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bank"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/banks/{id}/status:
+    patch:
+      summary: Update bank operational status
+      description: |
+        Transitions a bank to a new status. Invalid state-machine transitions
+        return 422.
+        **Roles**: `SWITCH_ADMIN`
+      operationId: updateBankStatus
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/BankIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBankStatusRequest"
+      responses:
+        "200":
+          description: Bank after status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bank"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/banks/{id}/certificates:
+    get:
+      summary: List mTLS certificates for a bank
+      description: |
+        **Roles**: `SWITCH_ADMIN` — any bank. `BANK_ADMIN` — own bank only.
+      operationId: listCertificates
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/BankIdParam"
+      responses:
+        "200":
+          description: Certificates registered for this bank
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Certificate"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    post:
+      summary: Register a new certificate
+      description: |
+        Uploads a PEM-encoded X.509 certificate. The certificate's CN is
+        used as the participant ID in the Kong mTLS header on the payment
+        gateway service.
+        **Roles**: `SWITCH_ADMIN`, `BANK_ADMIN` (own bank only)
+      operationId: createCertificate
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/BankIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCertificateRequest"
+      responses:
+        "201":
+          description: Certificate registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Certificate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/banks/{id}/certificates/{certId}:
+    delete:
+      summary: Revoke a certificate
+      description: |
+        Marks the certificate REVOKED. The payment gateway's Kong instance
+        will reject future mTLS connections presenting this certificate.
+        Action is written to the audit log.
+        **Roles**: `SWITCH_ADMIN`, `BANK_ADMIN` (own bank only)
+      operationId: revokeCertificate
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/BankIdParam"
+        - name: certId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Certificate revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/banks/{id}/health:
+    get:
+      summary: Bank connectivity health
+      description: |
+        Checks reachability of the bank's registered lookup, payment, and
+        status endpoints. Returns per-endpoint latency and error.
+        **Roles**: `SWITCH_ADMIN`, `SWITCH_OPS` — any bank.
+        `BANK_*` — own bank only.
+      operationId: getBankHealth
+      tags: [Banks]
+      parameters:
+        - $ref: "#/components/parameters/BankIdParam"
+      responses:
+        "200":
+          description: Health check results (individual endpoints may be unhealthy)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BankHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Transactions
+  # ---------------------------------------------------------------------------
+
+  /api/v1/transactions:
+    get:
+      summary: List transactions
+      description: |
+        Paginated, filterable list sourced from the portal read projection
+        (`transaction_view`).
+
+        `BANK_*` roles: the `bic` parameter is **ignored** — the server
+        always scopes to the BIC from `X-Participant-Id`. Providing a
+        different value has no effect and is not an error.
+
+        **Roles**: all authenticated roles.
+      operationId: listTransactions
+      tags: [Transactions]
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentStatus"
+        - name: bic
+          in: query
+          schema:
+            type: string
+          description: |
+            Filter by source or destination BIC. Silently overridden to the
+            caller's own BIC for `BANK_*` roles.
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Lower bound on `created_at` (RFC 3339, inclusive)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Upper bound on `created_at` (RFC 3339, inclusive)
+        - name: minAmount
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+          description: Minimum amount in minor units (inclusive)
+        - name: maxAmount
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+          description: Maximum amount in minor units (inclusive)
+      responses:
+        "200":
+          description: Paginated transaction list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/transactions/export:
+    get:
+      summary: Request a transaction export
+      description: |
+        Starts an async export job. Returns immediately with a `jobId`.
+        Poll `GET /export-jobs/{jobId}` to check status and retrieve the
+        download URL when the job completes. Accepts the same filters as
+        `GET /transactions`.
+        **Roles**: `SWITCH_ADMIN`, `SWITCH_OPS`, `BANK_ADMIN`, `BANK_OPERATOR`
+      operationId: exportTransactions
+      tags: [Transactions]
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [csv, xlsx]
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentStatus"
+        - name: bic
+          in: query
+          schema:
+            type: string
+          description: Silently overridden for BANK_* roles
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "202":
+          description: Export job accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportJobAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/transactions/{paymentId}:
+    get:
+      summary: Get transaction detail
+      description: |
+        Returns full transaction detail including the embedded timeline.
+        `BANK_*` roles are restricted to transactions where source or
+        destination BIC matches their `X-Participant-Id`.
+        **Roles**: all authenticated roles.
+      operationId: getTransaction
+      tags: [Transactions]
+      parameters:
+        - $ref: "#/components/parameters/PaymentIdParam"
+      responses:
+        "200":
+          description: Transaction detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/transactions/{paymentId}/timeline:
+    get:
+      summary: Get transaction saga timeline
+      description: |
+        Ordered saga state transitions from `transaction_event_view`.
+        Powers the `TransactionTimeline` stepper component in the portal.
+        **Roles**: all authenticated roles (same scope as detail).
+      operationId: getTransactionTimeline
+      tags: [Transactions]
+      parameters:
+        - $ref: "#/components/parameters/PaymentIdParam"
+      responses:
+        "200":
+          description: Ordered list of saga events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TransactionEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Export jobs
+  # ---------------------------------------------------------------------------
+
+  /api/v1/export-jobs/{jobId}:
+    get:
+      summary: Poll an export job
+      description: |
+        Returns the current status of an async export job. When `status` is
+        `DONE`, `downloadUrl` contains a pre-signed URL valid for 15 minutes.
+      operationId: getExportJob
+      tags: [Transactions]
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Export job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Dashboard
+  # ---------------------------------------------------------------------------
+
+  /api/v1/dashboard/summary:
+    get:
+      summary: Volume and performance summary
+      description: |
+        Hourly buckets of transaction volume, success rate, abort rate, and
+        p99 end-to-end saga latency for the requested time range.
+        **Roles**: `SWITCH_ADMIN`, `SWITCH_OPS` — all participants.
+        `BANK_*` — own bank only (BIC forced from `X-Participant-Id`).
+      operationId: getDashboardSummary
+      tags: [Dashboard]
+      parameters:
+        - name: bic
+          in: query
+          schema:
+            type: string
+          description: Filter to a specific BIC (ignored for BANK_* roles)
+        - $ref: "#/components/parameters/RangeParam"
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/dashboard/abort-reasons:
+    get:
+      summary: Abort reason breakdown
+      description: |
+        Aborted payment counts grouped by reason category for the time range.
+        **Roles**: same as `/dashboard/summary`.
+      operationId: getAbortReasons
+      tags: [Dashboard]
+      parameters:
+        - name: bic
+          in: query
+          schema:
+            type: string
+          description: Filter to a specific BIC (ignored for BANK_* roles)
+        - $ref: "#/components/parameters/RangeParam"
+      responses:
+        "200":
+          description: Abort reason breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbortReasonBreakdown"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Settlement
+  # ---------------------------------------------------------------------------
+
+  /api/v1/settlement/windows:
+    get:
+      summary: List settlement windows
+      description: |
+        **Roles**: `SWITCH_ADMIN`, `SWITCH_OPS`, `BANK_ADMIN`, `BANK_OPERATOR`
+        (BANK_* scoped to own BIC via `X-Participant-Id`).
+      operationId: listSettlementWindows
+      tags: [Settlement]
+      parameters:
+        - name: bic
+          in: query
+          schema:
+            type: string
+          description: Filter by participant BIC (ignored for BANK_* roles)
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          description: Paginated settlement windows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettlementWindowListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/settlement/windows/{id}:
+    get:
+      summary: Get settlement window detail
+      description: |
+        Returns a single window with per-participant net positions.
+        **Roles**: same as list.
+      operationId: getSettlementWindow
+      tags: [Settlement]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Settlement window detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettlementWindow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Users
+  # ---------------------------------------------------------------------------
+
+  /api/v1/users:
+    get:
+      summary: List portal users
+      description: |
+        Fetches users from the Authentik REST API and enriches with
+        bank name where applicable.
+        **Roles**: `SWITCH_ADMIN` — all users. `BANK_ADMIN` — own bank only.
+      operationId: listUsers
+      tags: [Users]
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: role
+          in: query
+          schema:
+            $ref: "#/components/schemas/UserRole"
+      responses:
+        "200":
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      summary: Create a portal user
+      description: |
+        Creates the user in Authentik (via REST API) with the specified role
+        group membership and `participant_id` user attribute. Authentik sends
+        the user an invitation email to set their password and enroll TOTP.
+
+        `BANK_ADMIN` callers: `participantId` in the request body is ignored
+        — the server substitutes their own `X-Participant-Id`. They may only
+        assign `BANK_OPERATOR` or `BANK_VIEWER` roles.
+        **Roles**: `SWITCH_ADMIN`, `BANK_ADMIN`
+      operationId: createUser
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created in Authentik
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Email already registered in Authentik
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/users/{id}/role:
+    patch:
+      summary: Change a user's role
+      description: |
+        Moves the user between Authentik groups (e.g. `bank-operators` →
+        `bank-admins`). The change takes effect on the user's next login or
+        session refresh. Written to the audit log.
+        **Roles**: `SWITCH_ADMIN`, `BANK_ADMIN` (own bank, BANK_* tier only)
+      operationId: updateUserRole
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Authentik user UUID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRoleRequest"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Role escalation not permitted for caller's own role tier
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------------------
+  # Audit Log
+  # ---------------------------------------------------------------------------
+
+  /api/v1/audit-log:
+    get:
+      summary: Query the audit log
+      description: |
+        Immutable log of all state-changing actions (bank status changes,
+        certificate issuance/revocation, role changes, user creation, field
+        reveals). `actorId` is the Authentik user UUID (`X-authentik-uid`).
+        **Roles**: `SWITCH_ADMIN` only.
+      operationId: getAuditLog
+      tags: [Audit]
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: actorId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by Authentik user UUID (`X-authentik-uid`)
+        - name: action
+          in: query
+          schema:
+            type: string
+            enum:
+              - BANK_STATUS_CHANGED
+              - CERTIFICATE_ISSUED
+              - CERTIFICATE_REVOKED
+              - USER_CREATED
+              - USER_ROLE_CHANGED
+              - FIELD_REVEALED
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Paginated audit log entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+
+  securitySchemes:
+    authentikSession:
+      type: apiKey
+      in: cookie
+      name: authentik_session
+      description: |
+        httpOnly session cookie set by Authentik after successful
+        authentication (username + password + TOTP). Managed entirely by
+        the browser — the SPA does not read, store, or attach this cookie
+        manually. Authentik's outpost validates it on every request and
+        injects identity headers before forwarding to Portal API.
+
+  # ---------------------------------------------------------------------------
+  # Reusable parameters
+  # ---------------------------------------------------------------------------
+
+  parameters:
+    BankIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Bank UUID
+
+    PaymentIdParam:
+      name: paymentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: 1-based page number
+
+    PageSizeParam:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
+
+    RangeParam:
+      name: range
+      in: query
+      required: true
+      schema:
+        type: string
+        enum: [1h, 6h, 24h, 7d, 30d]
+      description: Aggregation time range
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+
+  schemas:
+
+    # Identity
+    UserProfile:
+      type: object
+      description: Caller identity derived from Authentik-injected headers
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: Authentik user UUID (from `X-authentik-uid`)
+        username:
+          type: string
+          description: Email/username (from `X-authentik-username`)
+          example: "alice@equity.ke"
+        role:
+          $ref: "#/components/schemas/UserRole"
+        participantId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Null/empty for switch staff. Sourced from the Authentik user
+            attribute `participant_id` via the `X-Participant-Id` header.
+        bankName:
+          type: string
+          nullable: true
+          description: Resolved from participant service when participantId is set
+          example: "Equity Bank Kenya"
+
+    UserRole:
+      type: string
+      enum:
+        - SWITCH_ADMIN
+        - SWITCH_OPS
+        - BANK_ADMIN
+        - BANK_OPERATOR
+        - BANK_VIEWER
+      description: |
+        Portal RBAC role. Derived from Authentik group membership by a
+        property mapping expression and forwarded as `X-User-Role`.
+
+    # Banks
+    Bank:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        bic:
+          type: string
+          example: "EQBLKENA"
+        name:
+          type: string
+          example: "Equity Bank Kenya"
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2
+          example: "KE"
+        status:
+          $ref: "#/components/schemas/BankStatus"
+        settlementAccount:
+          type: string
+          example: "KEACB0000001234"
+        onboardedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    BankStatus:
+      type: string
+      enum:
+        - APPLICATION
+        - SANDBOX
+        - CERTIFICATION
+        - PRODUCTION_ACTIVE
+        - SUSPENDED
+        - DECOMMISSIONED
+      description: |
+        State machine:
+        APPLICATION → SANDBOX → CERTIFICATION → PRODUCTION_ACTIVE ⇄ SUSPENDED → DECOMMISSIONED
+
+    BankListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bank"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    CreateBankRequest:
+      type: object
+      required: [bic, name, country, settlementAccount]
+      properties:
+        bic:
+          type: string
+          example: "EQBLKENA"
+        name:
+          type: string
+          example: "Equity Bank Kenya"
+        country:
+          type: string
+          example: "KE"
+        settlementAccount:
+          type: string
+          example: "KEACB0000001234"
+        notes:
+          type: string
+
+    UpdateBankStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/BankStatus"
+        reason:
+          type: string
+          description: Required when suspending or decommissioning
+
+    Certificate:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        bankId:
+          type: string
+          format: uuid
+        subject:
+          type: string
+          description: Certificate subject DN (RFC 4514)
+          example: "CN=equity-bank,O=Equity Bank,C=KE"
+        fingerprint:
+          type: string
+          description: SHA-256 fingerprint (hex, colon-separated)
+        notBefore:
+          type: string
+          format: date-time
+        notAfter:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ACTIVE, REVOKED, EXPIRED]
+        issuedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateCertificateRequest:
+      type: object
+      required: [pem]
+      properties:
+        pem:
+          type: string
+          description: PEM-encoded X.509 certificate (BEGIN CERTIFICATE block)
+
+    BankHealth:
+      type: object
+      properties:
+        bankId:
+          type: string
+          format: uuid
+        checkedAt:
+          type: string
+          format: date-time
+        endpoints:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                enum: [lookup, payment, status]
+              url:
+                type: string
+                format: uri
+              healthy:
+                type: boolean
+              latencyMs:
+                type: integer
+                nullable: true
+              error:
+                type: string
+                nullable: true
+
+    # Transactions
+    PaymentStatus:
+      type: string
+      enum:
+        - RECEIVED
+        - VALIDATED
+        - QUOTED
+        - SCREENED
+        - RESERVED
+        - COMMITTED
+        - SETTLED
+        - ABORTED
+
+    TransactionSummary:
+      type: object
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        endToEndId:
+          type: string
+          example: "E2E-20260620-0001"
+        sourceBank:
+          $ref: "#/components/schemas/BankRef"
+        destinationBank:
+          $ref: "#/components/schemas/BankRef"
+        amount:
+          type: integer
+          description: Minor units (e.g. cents)
+          example: 500000
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          example: "KES"
+        status:
+          $ref: "#/components/schemas/PaymentStatus"
+        abortReason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TransactionDetail:
+      allOf:
+        - $ref: "#/components/schemas/TransactionSummary"
+        - type: object
+          properties:
+            uetr:
+              type: string
+              format: uuid
+              description: SWIFT gpi Unique End-to-End Transaction Reference
+            instructionId:
+              type: string
+            chargeBearer:
+              type: string
+              enum: [DEBT, CRED, SHAR, SLEV]
+            settlementDate:
+              type: string
+              format: date
+            debtorName:
+              type: string
+              nullable: true
+            creditorName:
+              type: string
+              nullable: true
+            purposeCode:
+              type: string
+              nullable: true
+            remittanceInfo:
+              type: string
+              nullable: true
+            timeline:
+              type: array
+              items:
+                $ref: "#/components/schemas/TransactionEvent"
+
+    TransactionEvent:
+      type: object
+      properties:
+        event:
+          $ref: "#/components/schemas/PaymentStatus"
+        occurredAt:
+          type: string
+          format: date-time
+        detail:
+          type: object
+          nullable: true
+          description: |
+            Step-specific payload:
+            - QUOTED: `{ "fee": 50, "quoteId": "..." }`
+            - SCREENED: `{ "cleared": true }`
+            - RESERVED: `{ "expiresAt": "2026-06-20T10:15:31Z" }`
+            - ABORTED: `{ "reason": "COMPLIANCE_FAILED" }`
+          additionalProperties: true
+
+    BankRef:
+      type: object
+      properties:
+        bic:
+          type: string
+          example: "EQBLKENA"
+        name:
+          type: string
+          example: "Equity Bank Kenya"
+
+    TransactionListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionSummary"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    ExportJobAccepted:
+      type: object
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        pollUrl:
+          type: string
+          format: uri
+
+    ExportJob:
+      type: object
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING, RUNNING, DONE, FAILED]
+        format:
+          type: string
+          enum: [csv, xlsx]
+        downloadUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Pre-signed URL, present only when DONE. Valid 15 minutes.
+        rowCount:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    # Dashboard
+    DashboardSummary:
+      type: object
+      properties:
+        range:
+          type: string
+          enum: [1h, 6h, 24h, 7d, 30d]
+        buckets:
+          type: array
+          description: One entry per hour (or per day for 7d/30d ranges)
+          items:
+            type: object
+            properties:
+              periodStart:
+                type: string
+                format: date-time
+              totalTransactions:
+                type: integer
+              successCount:
+                type: integer
+              abortCount:
+                type: integer
+              successRate:
+                type: number
+                format: float
+                description: 0.0–1.0
+              p99LatencyMs:
+                type: integer
+                nullable: true
+              totalAmountMinorUnits:
+                type: integer
+
+    AbortReasonBreakdown:
+      type: object
+      properties:
+        range:
+          type: string
+          enum: [1h, 6h, 24h, 7d, 30d]
+        total:
+          type: integer
+        reasons:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+                enum: [compliance, timeout, bank_error, validation, unknown]
+              count:
+                type: integer
+              percentage:
+                type: number
+                format: float
+
+    # Settlement
+    SettlementWindowSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        openedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [OPEN, CLOSED, SETTLED, DISPUTED]
+        settlementDate:
+          type: string
+          format: date
+        currency:
+          type: string
+        netPositionMinorUnits:
+          type: integer
+          nullable: true
+          description: |
+            Net for the scoped BIC (positive = receivable, negative = payable).
+            Null when switch staff view all participants.
+
+    SettlementWindow:
+      allOf:
+        - $ref: "#/components/schemas/SettlementWindowSummary"
+        - type: object
+          properties:
+            positions:
+              type: array
+              items:
+                type: object
+                properties:
+                  bic:
+                    type: string
+                  bankName:
+                    type: string
+                  sentMinorUnits:
+                    type: integer
+                  receivedMinorUnits:
+                    type: integer
+                  netMinorUnits:
+                    type: integer
+                  transactionCount:
+                    type: integer
+
+    SettlementWindowListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SettlementWindowSummary"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    # Users
+    User:
+      type: object
+      description: |
+        Portal user record sourced from Authentik. `id` is the Authentik
+        user UUID and is used as the foreign key in the audit log
+        (`actor_id`), matching the `X-authentik-uid` header.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Authentik user UUID (`X-authentik-uid`)
+        email:
+          type: string
+          format: email
+        role:
+          $ref: "#/components/schemas/UserRole"
+        participantId:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, SUSPENDED]
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: "#/components/schemas/UserRole"
+        participantId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Required when creating a BANK_* user. Ignored for BANK_ADMIN
+            callers — server substitutes their own `X-Participant-Id`.
+
+    UpdateRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/UserRole"
+
+    UserListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    # Audit
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Authentik user UUID (`X-authentik-uid`)
+            email:
+              type: string
+              format: email
+            role:
+              $ref: "#/components/schemas/UserRole"
+        action:
+          type: string
+          enum:
+            - BANK_STATUS_CHANGED
+            - CERTIFICATE_ISSUED
+            - CERTIFICATE_REVOKED
+            - USER_CREATED
+            - USER_ROLE_CHANGED
+            - FIELD_REVEALED
+        targetType:
+          type: string
+          enum: [BANK, CERTIFICATE, USER, TRANSACTION]
+        targetId:
+          type: string
+          format: uuid
+        diff:
+          type: object
+          nullable: true
+          description: |
+            Before/after snapshot. Shape depends on action:
+            `BANK_STATUS_CHANGED`: `{ "before": "SANDBOX", "after": "CERTIFICATION" }`
+            `USER_ROLE_CHANGED`: `{ "before": "BANK_OPERATOR", "after": "BANK_ADMIN" }`
+            `FIELD_REVEALED`: `{ "field": "accountNumber", "paymentId": "..." }`
+          additionalProperties: true
+        occurredAt:
+          type: string
+          format: date-time
+
+    AuditLogResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLogEntry"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "insufficient permissions"
+        code:
+          type: string
+          nullable: true
+          example: "FORBIDDEN_BIC_SCOPE"
+
+  # ---------------------------------------------------------------------------
+  # Reusable responses
+  # ---------------------------------------------------------------------------
+
+  responses:
+    BadRequest:
+      description: Invalid request — missing or malformed fields
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Unauthorized:
+      description: |
+        Authentik outpost rejected the session (missing or expired cookie),
+        or Portal API's `RequireAuthentikIdentity` middleware found an empty
+        `X-authentik-uid` header. The SPA should redirect the browser to
+        `/outpost.goauthentik.io/start` to re-authenticate.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Forbidden:
+      description: |
+        Valid session, but the caller's role (from `X-User-Role`) does not
+        permit this action, or the target resource is outside the caller's
+        participant scope (enforced via `X-Participant-Id`). Also returned
+        when a CSRF token is missing or invalid on a mutating request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    TooManyRequests:
+      description: |
+        Rate limit exceeded — enforced by Authentik's built-in reputation
+        policy on the identification stage before the session is established.
+        After session establishment, rate limiting can be applied at the
+        ingress layer (nginx/Traefik) in front of the Authentik outpost.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    InternalError:
+      description: Unexpected server-side error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

@@ -1,0 +1,169 @@
+# Authentik blueprint — bootstraps the Switch Portal application, OAuth2
+# provider, property mappings for custom headers, and an embedded outpost.
+#
+# Loaded automatically by the authentik-worker via the custom blueprints
+# volume mount.  After first boot, visit http://localhost:9000/if/admin/
+# with admin / switchadmin to manage users and groups.
+#
+# Custom header mapping:
+#   X-User-Role       → authentik user attribute "switch_role"
+#   X-Participant-Id  → authentik user attribute "participant_id"
+#
+# To assign roles, set these attributes on each Authentik user:
+#   switch_role:    SWITCH_ADMIN | SWITCH_OPS | BANK_ADMIN | BANK_OPERATOR | BANK_VIEWER
+#   participant_id: <BIC of the bank>  (only for BANK_* roles)
+
+version: 1
+metadata:
+  name: Switch Portal Application
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # -------------------------------------------------------------------------
+  # Property mapping: X-User-Role header from user attribute
+  # -------------------------------------------------------------------------
+  - model: authentik_providers_oauth2.scopemapping
+    id: switch-role-mapping
+    identifiers:
+      managed: goauthentik.io/providers/proxy/scope-switch-role
+    attrs:
+      name: "Switch Role Header"
+      scope_name: "switch-role"
+      expression: |
+        return {
+          "ak_proxy": {
+            "user_attributes": {
+              "additionalHeaders": {
+                "X-User-Role": request.user.attributes.get("switch_role", ""),
+              }
+            }
+          }
+        }
+
+  # -------------------------------------------------------------------------
+  # Property mapping: X-Participant-Id header from user attribute
+  # -------------------------------------------------------------------------
+  - model: authentik_providers_oauth2.scopemapping
+    id: switch-participant-mapping
+    identifiers:
+      managed: goauthentik.io/providers/proxy/scope-switch-participant
+    attrs:
+      name: "Switch Participant Header"
+      scope_name: "switch-participant"
+      expression: |
+        return {
+          "ak_proxy": {
+            "user_attributes": {
+              "additionalHeaders": {
+                "X-Participant-Id": request.user.attributes.get("participant_id", ""),
+              }
+            }
+          }
+        }
+
+  # -------------------------------------------------------------------------
+  # Proxy provider — forward-auth mode (nginx/Kong style)
+  # -------------------------------------------------------------------------
+  - model: authentik_providers_proxy.proxyprovider
+    id: portal-proxy-provider
+    identifiers:
+      name: "Switch Portal Provider"
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      mode: forward_single
+      external_host: "http://localhost:8000"
+      # Property mappings for custom headers
+      property_mappings:
+        - !KeyOf switch-role-mapping
+        - !KeyOf switch-participant-mapping
+
+  # -------------------------------------------------------------------------
+  # Application
+  # -------------------------------------------------------------------------
+  - model: authentik_core.application
+    id: portal-application
+    identifiers:
+      slug: switch-portal
+    attrs:
+      name: "Switch Portal"
+      provider: !KeyOf portal-proxy-provider
+      meta_launch_url: "http://localhost:8000/portal/"
+      policy_engine_mode: any
+
+  # -------------------------------------------------------------------------
+  # Embedded outpost (uses the built-in outpost, no separate container)
+  # -------------------------------------------------------------------------
+  - model: authentik_outposts.outpost
+    id: portal-outpost
+    identifiers:
+      name: "Switch Portal Outpost"
+    attrs:
+      type: proxy
+      providers:
+        - !KeyOf portal-proxy-provider
+      config:
+        # The embedded outpost listens on the authentik-server container itself
+        # at /outpost.goauthentik.io — Kong's forward-auth plugin calls this.
+        authentik_host: "http://authentik-server:9000"
+        authentik_host_insecure: true
+
+  # -------------------------------------------------------------------------
+  # Dev users — one per role for easy testing
+  # -------------------------------------------------------------------------
+  - model: authentik_core.user
+    id: user-switch-admin
+    identifiers:
+      username: switch-admin
+    attrs:
+      name: "Switch Admin"
+      email: "switch-admin@switch.local"
+      is_active: true
+      path: users
+      attributes:
+        switch_role: "SWITCH_ADMIN"
+        participant_id: ""
+      password: "switchadmin"
+
+  - model: authentik_core.user
+    id: user-switch-ops
+    identifiers:
+      username: switch-ops
+    attrs:
+      name: "Switch Ops"
+      email: "switch-ops@switch.local"
+      is_active: true
+      path: users
+      attributes:
+        switch_role: "SWITCH_OPS"
+        participant_id: ""
+      password: "switchops"
+
+  - model: authentik_core.user
+    id: user-bank-admin
+    identifiers:
+      username: bank-admin
+    attrs:
+      name: "Bank A Admin"
+      email: "bank-admin@switch.local"
+      is_active: true
+      path: users
+      attributes:
+        switch_role: "BANK_ADMIN"
+        participant_id: "BANKABICX"
+      password: "bankadmin"
+
+  - model: authentik_core.user
+    id: user-bank-viewer
+    identifiers:
+      username: bank-viewer
+    attrs:
+      name: "Bank A Viewer"
+      email: "bank-viewer@switch.local"
+      is_active: true
+      path: users
+      attributes:
+        switch_role: "BANK_VIEWER"
+        participant_id: "BANKABICX"
+      password: "bankviewer"
