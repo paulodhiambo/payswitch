@@ -15,15 +15,17 @@ type mockStep struct {
 	name        string
 	executeErr  error
 	compensated bool
+	paid        *domain.Payment
 }
 
 func (m *mockStep) Name() string { return m.name }
 
-func (m *mockStep) Execute(_ context.Context, _ *domain.Payment) error {
+func (m *mockStep) Execute(ctx context.Context, p *domain.Payment) error {
+	m.paid = p
 	return m.executeErr
 }
 
-func (m *mockStep) Compensate(_ context.Context, _ *domain.Payment) error {
+func (m *mockStep) Compensate(ctx context.Context, p *domain.Payment) error {
 	m.compensated = true
 	return nil
 }
@@ -67,6 +69,18 @@ func TestSaga_AllStepsCompensatedInReverseOrder(t *testing.T) {
 	err := s.Run(context.Background(), &domain.Payment{})
 
 	require.Error(t, err)
+	require.True(t, first.compensated)
+	require.True(t, second.compensated)
+}
+
+func TestSaga_CompensatePayment_RunsAllCompensations(t *testing.T) {
+	first := &mockStep{name: "first"}
+	second := &mockStep{name: "second"}
+
+	s := saga.New(first, second)
+	p := &domain.Payment{ID: "pay-1"}
+	err := s.CompensatePayment(context.Background(), p)
+	require.NoError(t, err)
 	require.True(t, first.compensated)
 	require.True(t, second.compensated)
 }

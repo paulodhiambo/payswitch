@@ -11,6 +11,8 @@ import (
 	"switch/pkg/outbox"
 )
 
+const defaultReservationTTL = 5 * time.Minute
+
 type PaymentRepo struct {
 	pool *pgxpool.Pool
 }
@@ -85,6 +87,30 @@ func (r *PaymentRepo) UpdateStatus(ctx context.Context, id string, status domain
 	return tx.Commit(ctx)
 }
 
+func (r *PaymentRepo) MarkReserved(ctx context.Context, id string, ttl time.Duration) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE payment SET status = $1, reserved_at = $2, expires_at = $3, updated_at = now()
+		 WHERE id = $4`,
+		domain.StatusReserved, now, expiresAt, id); err != nil {
+		return err
+	}
+
+	if err := r.writeEvent(ctx, tx, id, domain.StatusValidated, domain.StatusReserved); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *PaymentRepo) writeEvent(ctx context.Context, tx pgx.Tx, paymentID string, from, to domain.PaymentStatus) error {
 	var p domain.Payment
 	if err := tx.QueryRow(ctx,
@@ -107,16 +133,35 @@ func (r *PaymentRepo) writeEvent(ctx context.Context, tx pgx.Tx, paymentID strin
 	})
 }
 
+func (r *PaymentRepo) GetByID(ctx context.Context, id string) (*domain.Payment, error) {
+	p := &domain.Payment{}
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, end_to_end_id, source_bic, destination_bic, source_account,
+		        dest_account, amount, currency, status, quote_id, reserved_at, expires_at,
+		        created_at, updated_at
+		 FROM payment WHERE id = $1`, id).
+		Scan(&p.ID, &p.EndToEndID, &p.SourceBIC, &p.DestinationBIC,
+			&p.SourceAccount, &p.DestAccount, &p.Amount, &p.Currency, &p.Status,
+			&p.QuoteID, &p.ReservedAt, &p.ExpiresAt, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return p, nil
+}
+
 func (r *PaymentRepo) GetByEndToEndID(ctx context.Context, e2eID string) (*domain.Payment, error) {
 	p := &domain.Payment{}
 	err := r.pool.QueryRow(ctx,
 		`SELECT id, end_to_end_id, source_bic, destination_bic, source_account,
-		        dest_account, amount, currency, status, reserved_at, expires_at,
+		        dest_account, amount, currency, status, quote_id, reserved_at, expires_at,
 		        created_at, updated_at
 		 FROM payment WHERE end_to_end_id = $1`, e2eID).
 		Scan(&p.ID, &p.EndToEndID, &p.SourceBIC, &p.DestinationBIC,
 			&p.SourceAccount, &p.DestAccount, &p.Amount, &p.Currency, &p.Status,
-			&p.ReservedAt, &p.ExpiresAt, &p.CreatedAt, &p.UpdatedAt)
+			&p.QuoteID, &p.ReservedAt, &p.ExpiresAt, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil

@@ -12,9 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"switch/internal/compliance"
 	"switch/internal/gateway"
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
+	"switch/internal/orchestrator/sweep"
 	"switch/pkg/config"
 	"switch/pkg/eventbus"
 	"switch/pkg/outbox"
@@ -40,9 +42,12 @@ func main() {
 	bank.SetBalance("SOURCE", 1_000_00)
 	bank.SetBalance("DEST", 0)
 
+	complianceClient := compliance.New()
+
 	paymentSaga := saga.New(
 		&saga.ValidateStep{Repo: repo},
-		&saga.ReserveStep{Repo: repo, Bank: bank},
+		&saga.ScreenStep{Client: complianceClient, Repo: repo},
+		&saga.ReserveStep{Repo: repo, Bank: bank, TTL: saga.DefaultReservationTTL},
 		&saga.CommitStep{Repo: repo, Bank: bank},
 	)
 
@@ -59,6 +64,10 @@ func main() {
 	} else {
 		log.Print("no kafka brokers configured — outbox relay disabled")
 	}
+
+	sw := sweep.New(repo, paymentSaga)
+	go sw.Run(ctx, 30*time.Second)
+	log.Printf("reservation sweeper started (poll interval: 30s)")
 
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,

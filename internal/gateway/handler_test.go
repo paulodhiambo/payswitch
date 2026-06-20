@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	"switch/internal/compliance"
 	"switch/internal/gateway"
 	"switch/internal/orchestrator/domain"
 	"switch/internal/orchestrator/saga"
@@ -43,6 +44,16 @@ func (r *memRepo) UpdateStatus(_ context.Context, id string, status domain.Payme
 	return nil
 }
 
+func (r *memRepo) GetByID(_ context.Context, id string) (*domain.Payment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.payments[id]
+	if !ok {
+		return nil, nil
+	}
+	return p, nil
+}
+
 func (r *memRepo) GetByEndToEndID(_ context.Context, e2eID string) (*domain.Payment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -58,15 +69,26 @@ func (r *memRepo) FindExpiredReservations(_ context.Context, before time.Time) (
 	return nil, nil
 }
 
+func (r *memRepo) MarkReserved(_ context.Context, id string, ttl time.Duration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.payments[id]; ok {
+		p.Status = domain.StatusReserved
+	}
+	return nil
+}
+
 func setupHandler() *chi.Mux {
 	repo := newMemRepo()
 	bank := saga.NewMockBankClient()
 	bank.SetBalance("SOURCE", 1_000_00)
 	bank.SetBalance("DEST", 0)
+	complianceClient := compliance.New()
 
 	s := saga.New(
 		&saga.ValidateStep{Repo: repo},
-		&saga.ReserveStep{Repo: repo, Bank: bank},
+		&saga.ScreenStep{Client: complianceClient, Repo: repo},
+		&saga.ReserveStep{Repo: repo, Bank: bank, TTL: saga.DefaultReservationTTL},
 		&saga.CommitStep{Repo: repo, Bank: bank},
 	)
 
@@ -80,13 +102,13 @@ func TestSubmitPayment_Success(t *testing.T) {
 	r := setupHandler()
 
 	body := map[string]any{
-		"end_to_end_id":  "e2e-001",
-		"source_bic":     "BANKUS33",
+		"end_to_end_id":   "e2e-001",
+		"source_bic":      "BANKUS33",
 		"destination_bic": "BANKDEFF",
-		"source_account": "SOURCE",
-		"dest_account":   "DEST",
-		"amount":         500_00,
-		"currency":       "USD",
+		"source_account":  "SOURCE",
+		"dest_account":    "DEST",
+		"amount":          500_00,
+		"currency":        "USD",
 	}
 	b, _ := json.Marshal(body)
 
@@ -107,13 +129,13 @@ func TestSubmitPayment_InvalidAmount(t *testing.T) {
 	r := setupHandler()
 
 	body := map[string]any{
-		"end_to_end_id":  "e2e-002",
-		"source_bic":     "BANKUS33",
+		"end_to_end_id":   "e2e-002",
+		"source_bic":      "BANKUS33",
 		"destination_bic": "BANKDEFF",
-		"source_account": "SOURCE",
-		"dest_account":   "DEST",
-		"amount":         -100,
-		"currency":       "USD",
+		"source_account":  "SOURCE",
+		"dest_account":    "DEST",
+		"amount":          -100,
+		"currency":        "USD",
 	}
 	b, _ := json.Marshal(body)
 
@@ -146,13 +168,13 @@ func TestGetPayment_Found(t *testing.T) {
 	r := setupHandler()
 
 	body := map[string]any{
-		"end_to_end_id":  "e2e-get-001",
-		"source_bic":     "BANKUS33",
+		"end_to_end_id":   "e2e-get-001",
+		"source_bic":      "BANKUS33",
 		"destination_bic": "BANKDEFF",
-		"source_account": "SOURCE",
-		"dest_account":   "DEST",
-		"amount":         250_00,
-		"currency":       "USD",
+		"source_account":  "SOURCE",
+		"dest_account":    "DEST",
+		"amount":          250_00,
+		"currency":        "USD",
 	}
 	b, _ := json.Marshal(body)
 

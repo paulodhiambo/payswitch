@@ -41,13 +41,18 @@ type Reservation struct {
 }
 
 type PaymentEvent struct {
-	PaymentID     string         `json:"payment_id"`
-	EndToEndID    string         `json:"end_to_end_id"`
-	FromStatus    PaymentStatus  `json:"from_status"`
-	ToStatus      PaymentStatus  `json:"to_status"`
-	SourceBIC     string         `json:"source_bic"`
-	DestBIC       string         `json:"dest_bic"`
-	Amount        int64          `json:"amount"`
-	Currency      string         `json:"currency"`
-	Timestamp     time.Time      `json:"timestamp"`
+	PaymentID  string        `json:"payment_id"`
+	EndToEndID string        `json:"end_to_end_id"`
+	FromStatus PaymentStatus `json:"from_status"`
+	ToStatus   PaymentStatus `json:"to_status"`
+	SourceBIC  string        `json:"source_bic"`
+	DestBIC    string        `json:"dest_bic"`
+	Amount     int64         `json:"amount"`
+	Currency   string        `json:"currency"`
+	Timestamp  time.Time     `json:"timestamp"`
+}
+
+type ComplianceResult struct {
+	Cleared bool
+	Reason  string
 }

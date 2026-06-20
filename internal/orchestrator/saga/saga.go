@@ -32,6 +32,15 @@ func (s *Saga) Run(ctx context.Context, p *domain.Payment) error {
 	return nil
 }
 
+func (s *Saga) CompensatePayment(ctx context.Context, p *domain.Payment) error {
+	for i := len(s.steps) - 1; i >= 0; i-- {
+		if err := s.steps[i].Compensate(ctx, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Saga) rollback(ctx context.Context, p *domain.Payment, completed []Step) {
 	for i := len(completed) - 1; i >= 0; i-- {
 		_ = completed[i].Compensate(ctx, p)
