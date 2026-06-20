@@ -15,6 +15,10 @@ func New(addr string) *Cache {
 	return &Cache{rdb: redis.NewClient(&redis.Options{Addr: addr})}
 }
 
+func (c *Cache) Set(ctx context.Context, key, val string, ttl time.Duration) error {
+	return c.rdb.Set(ctx, key, val, ttl).Err()
+}
+
 func (c *Cache) SetNX(ctx context.Context, key, val string, ttl time.Duration) (bool, error) {
 	return c.rdb.SetNX(ctx, key, val, ttl).Result()
 }

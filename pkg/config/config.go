@@ -15,6 +15,7 @@ func Load() (*Config, error) {
 	v.AutomaticEnv()
 	v.SetDefault("HTTP_ADDR", ":8080")
 	v.SetDefault("POSTGRES_DSN", "postgres://switch:switch@localhost:5432/switch?sslmode=disable")
+	v.SetDefault("REDIS_ADDR", "")
 
 	var c Config
 	if err := v.Unmarshal(&c); err != nil {
