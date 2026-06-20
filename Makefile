@@ -1,6 +1,6 @@
 .PHONY: build test vet proto sqlc tidy clean
 
-SERVICES := gateway compliance-service lookup-service settlement-service quoting-service notification-service audit-service certgen
+SERVICES := gateway compliance-service lookup-service settlement-service quoting-service notification-service audit-service reconciliation-service routing-service certificate-service certgen
 
 build:
 	@for svc in $(SERVICES); do \

@@ -5,6 +5,7 @@ import (
 
 	settlementpb "switch/api/proto/settlement"
 	paymentpb "switch/api/proto/payment"
+	"switch/internal/orchestrator/domain"
 )
 
 type GRPCServer struct {
@@ -45,4 +46,26 @@ func (s *GRPCServer) SettleWindow(ctx context.Context, req *settlementpb.SettleW
 
 func (s *GRPCServer) GetNetPositions(ctx context.Context, req *settlementpb.NetPositionRequest) (*settlementpb.NetPositionResponse, error) {
 	return nil, nil
+}
+
+type GRPCClient struct {
+	client settlementpb.SettlementClient
+}
+
+func NewGRPCClient(client settlementpb.SettlementClient) *GRPCClient {
+	return &GRPCClient{client: client}
+}
+
+func (c *GRPCClient) Submit(ctx context.Context, p *domain.Payment) error {
+	_, err := c.client.SubmitForSettlement(ctx, &paymentpb.Payment{
+		Id:             p.ID,
+		EndToEndId:     p.EndToEndID,
+		SourceBic:      p.SourceBIC,
+		DestinationBic: p.DestinationBIC,
+		SourceAccount:  p.SourceAccount,
+		DestAccount:    p.DestAccount,
+		Amount:         p.Amount,
+		Currency:       p.Currency,
+	})
+	return err
 }

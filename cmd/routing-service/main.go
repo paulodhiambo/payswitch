@@ -2,32 +2,60 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+
+	routingpb "switch/api/proto/routing"
 	"switch/internal/routing"
 	"switch/pkg/config"
+	"switch/pkg/metrics"
+	"switch/pkg/telemetry"
 )
 
 func main() {
-	_, err := config.Load()
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config", "error", err)
+		os.Exit(1)
 	}
 
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	svc := routing.New()
-	_ = svc
+	logger := telemetry.InitLogger("routing-service")
 
-	log.Print("routing-service started")
+	metrics.Listen(cfg.MetricsAddr)
+
+	svc := routing.New()
+	grpcSrv := grpc.NewServer()
+	routingpb.RegisterRoutingServer(grpcSrv, routing.NewGRPCServer(svc))
+	reflection.Register(grpcSrv)
+
+	addr := cfg.GRPCAddr
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("listen", "error", err)
+		os.Exit(1)
+	}
+
+	go func() {
+		logger.Info("routing-service gRPC listening", "addr", addr)
+		if err := grpcSrv.Serve(lis); err != nil {
+			logger.Error("serve", "error", err)
+			os.Exit(1)
+		}
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Print("routing-service shutting down...")
+	logger.Info("routing-service shutting down")
+	grpcSrv.GracefulStop()
 }

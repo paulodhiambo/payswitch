@@ -27,6 +27,14 @@ type ComplianceClient interface {
 	Screen(ctx context.Context, p *domain.Payment) (domain.ComplianceResult, error)
 }
 
+type LookupClient interface {
+	ResolveBIC(ctx context.Context, bic string) (name, country string, err error)
+}
+
+type SettlementClient interface {
+	Submit(ctx context.Context, p *domain.Payment) error
+}
+
 type OutboxWriter interface {
 	Write(ctx context.Context, topic, key string, event any) error
 }

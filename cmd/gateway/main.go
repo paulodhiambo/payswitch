@@ -17,8 +17,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	compliancepb "switch/api/proto/compliance"
+	lookuppb "switch/api/proto/lookup"
+	settlementpb "switch/api/proto/settlement"
 	"switch/internal/compliance"
+	"switch/internal/lookup"
 	"switch/internal/orchestrator/ports"
+	"switch/internal/settlement"
 	"switch/internal/gateway"
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
@@ -75,15 +79,40 @@ func main() {
 	}
 
 	complianceClient := resolveComplianceClient(cfg)
+	lookupClient := resolveLookupClient(cfg)
 
-	paymentSaga := saga.New(
+	sagaSteps := []saga.Step{
 		&saga.ValidateStep{Repo: repo},
+		&saga.LookupStep{Client: lookupClient, Repo: repo},
 		&saga.ScreenStep{Client: complianceClient, Repo: repo},
 		&saga.ReserveStep{Repo: repo, Bank: bank, TTL: saga.DefaultReservationTTL},
 		&saga.CommitStep{Repo: repo, Bank: bank},
-	)
+	}
+
+	if cfg.SettlementAddr != "" {
+		settlementClient := resolveSettlementClient(cfg)
+		sagaSteps = append(sagaSteps, &saga.SettleStep{Client: settlementClient, Repo: repo})
+	}
+
+	paymentSaga := saga.New(sagaSteps...)
 
 	h := gateway.NewHandler(repo, paymentSaga, participantReg)
+	h.AddPool(pool)
+	if cfg.ComplianceAddr != "" {
+		h.AddHealthCheck("compliance", func(ctx context.Context) error {
+			conn, err := grpc.NewClient(cfg.ComplianceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				return err
+			}
+			conn.Close()
+			return nil
+		})
+	}
+	if cfg.KafkaBrokers != nil && len(cfg.KafkaBrokers) > 0 {
+		h.AddHealthCheck("kafka", func(ctx context.Context) error {
+			return nil // connectivity verified at producer init
+		})
+	}
 
 	r := chi.NewRouter()
 
@@ -151,6 +180,25 @@ func resolveComplianceClient(cfg *config.Config) ports.ComplianceClient {
 		return compliance.NewGRPCClient(compliancepb.NewComplianceClient(conn))
 	}
 	return compliance.New()
+}
+
+func resolveLookupClient(cfg *config.Config) ports.LookupClient {
+	if cfg.LookupAddr != "" {
+		conn, err := grpc.NewClient(cfg.LookupAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect lookup: %v", err)
+		}
+		return lookup.NewGRPCClient(lookuppb.NewLookupClient(conn))
+	}
+	return lookup.New(nil)
+}
+
+func resolveSettlementClient(cfg *config.Config) ports.SettlementClient {
+	conn, err := grpc.NewClient(cfg.SettlementAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("connect settlement: %v", err)
+	}
+	return settlement.NewGRPCClient(settlementpb.NewSettlementClient(conn))
 }
 
 func buildTLSConfig(cfg *config.Config) (*tls.Config, error) {

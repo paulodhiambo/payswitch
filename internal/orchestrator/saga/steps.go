@@ -3,6 +3,7 @@ package saga
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"switch/internal/orchestrator/domain"
@@ -38,6 +39,29 @@ func (s *ValidateStep) Execute(ctx context.Context, p *domain.Payment) error {
 
 func (s *ValidateStep) Compensate(ctx context.Context, p *domain.Payment) error {
 	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusAborted)
+}
+
+type LookupStep struct {
+	Client ports.LookupClient
+	Repo   ports.PaymentRepository
+}
+
+func (s *LookupStep) Name() string { return "lookup_bic" }
+
+func (s *LookupStep) Execute(ctx context.Context, p *domain.Payment) error {
+	name, country, err := s.Client.ResolveBIC(ctx, p.DestinationBIC)
+	if err != nil {
+		return fmt.Errorf("lookup destination BIC: %w", err)
+	}
+	slog.Debug("destination BIC resolved", "bic", p.DestinationBIC, "name", name, "country", country)
+	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusValidated); err != nil {
+		return fmt.Errorf("update status after BIC lookup: %w", err)
+	}
+	return nil
+}
+
+func (s *LookupStep) Compensate(_ context.Context, _ *domain.Payment) error {
+	return nil
 }
 
 type ScreenStep struct {
@@ -111,5 +135,23 @@ func (s *CommitStep) Execute(ctx context.Context, p *domain.Payment) error {
 
 func (s *CommitStep) Compensate(ctx context.Context, p *domain.Payment) error {
 	_ = s.Bank.ReverseCredit(ctx, p.DestinationBIC, p.DestAccount, p.Amount)
+	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusAborted)
+}
+
+type SettleStep struct {
+	Client ports.SettlementClient
+	Repo   ports.PaymentRepository
+}
+
+func (s *SettleStep) Name() string { return "settle" }
+
+func (s *SettleStep) Execute(ctx context.Context, p *domain.Payment) error {
+	if err := s.Client.Submit(ctx, p); err != nil {
+		return fmt.Errorf("submit for settlement: %w", err)
+	}
+	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusCommitted)
+}
+
+func (s *SettleStep) Compensate(ctx context.Context, p *domain.Payment) error {
 	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusAborted)
 }

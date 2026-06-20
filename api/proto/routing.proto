@@ -1,0 +1,32 @@
+syntax = "proto3";
+package switch.v1;
+option go_package = "switch/api/proto/routing;routingpb";
+
+message Route {
+  string source_bic = 1;
+  string destination_bic = 2;
+  string currency = 3;
+  int64 fee = 4;
+  int32 estimated_ms = 5;
+}
+
+message FindRouteRequest {
+  string source_bic = 1;
+  string destination_bic = 2;
+  string currency = 3;
+}
+
+message FindRouteResponse {
+  Route route = 1;
+}
+
+message AddRouteRequest {
+  Route route = 1;
+}
+
+message AddRouteResponse {}
+
+service Routing {
+  rpc FindRoute(FindRouteRequest) returns (FindRouteResponse);
+  rpc AddRoute(AddRouteRequest) returns (AddRouteResponse);
+}

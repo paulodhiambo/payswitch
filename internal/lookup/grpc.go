@@ -41,7 +41,15 @@ func NewGRPCClient(client lookuppb.LookupClient) *GRPCClient {
 	return &GRPCClient{client: client}
 }
 
-func (c *GRPCClient) ResolveBIC(ctx context.Context, bic string) (*BankInfo, error) {
+func (c *GRPCClient) ResolveBIC(ctx context.Context, bic string) (string, string, error) {
+	resp, err := c.client.ResolveBIC(ctx, &lookuppb.BICRequest{Bic: bic})
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Name, resp.Country, nil
+}
+
+func (c *GRPCClient) ResolveBICFull(ctx context.Context, bic string) (*BankInfo, error) {
 	resp, err := c.client.ResolveBIC(ctx, &lookuppb.BICRequest{Bic: bic})
 	if err != nil {
 		return nil, err

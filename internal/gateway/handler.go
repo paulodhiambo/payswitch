@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/trace"
 
 	"switch/internal/orchestrator/domain"
@@ -34,18 +36,58 @@ type ParticipantResolver interface {
 	GetBankForParticipant(ctx context.Context, id string) (bic, account string, err error)
 }
 
+type CheckFn func(ctx context.Context) error
+
 type Handler struct {
 	repo       ports.PaymentRepository
 	saga       *saga.Saga
 	resolver   ParticipantResolver
+	pgpool     *pgxpool.Pool
+	mu         sync.RWMutex
+	checks     []struct{ name string; fn CheckFn }
 }
 
 func NewHandler(repo ports.PaymentRepository, s *saga.Saga, resolver ParticipantResolver) *Handler {
 	return &Handler{repo: repo, saga: s, resolver: resolver}
 }
 
+func (h *Handler) AddPool(pool *pgxpool.Pool) {
+	h.pgpool = pool
+}
+
+func (h *Handler) AddHealthCheck(name string, fn CheckFn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.checks = append(h.checks, struct{ name string; fn CheckFn }{name, fn})
+}
+
 func (h *Handler) Register(r chi.Router) {
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
+		h.mu.RLock()
+		checks := make([]struct{ name string; fn CheckFn }, len(h.checks))
+		copy(checks, h.checks)
+		h.mu.RUnlock()
+
+		if h.pgpool != nil {
+			if err := h.pgpool.Ping(req.Context()); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(`{"status":"unhealthy","error":"database unreachable"}`))
+				return
+			}
+		}
+
+		for _, c := range checks {
+			if err := c.fn(req.Context()); err != nil {
+				slog.Warn("health check failed", "check", c.name, "error", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy", "error": c.name + ": " + err.Error()})
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})

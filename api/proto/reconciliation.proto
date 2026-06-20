@@ -1,0 +1,49 @@
+syntax = "proto3";
+package switch.v1;
+option go_package = "switch/api/proto/reconciliation;reconciliationpb";
+
+message Record {
+  string payment_id = 1;
+  string source_bic = 2;
+  string dest_bic = 3;
+  int64 amount = 4;
+  string currency = 5;
+  string status = 6;
+  bool matched = 7;
+  string discrepancy = 8;
+}
+
+message AddRecordRequest {
+  Record record = 1;
+}
+
+message AddRecordResponse {}
+
+message MatchRequest {
+  string payment_id = 1;
+  string expected_status = 2;
+}
+
+message MatchResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message ReportRequest {}
+
+message ReportResponse {
+  repeated Record records = 1;
+}
+
+message ImportExternalRequest {
+  string source = 1;
+}
+
+message ImportExternalResponse {}
+
+service Reconciliation {
+  rpc AddRecord(AddRecordRequest) returns (AddRecordResponse);
+  rpc Match(MatchRequest) returns (MatchResponse);
+  rpc Report(ReportRequest) returns (ReportResponse);
+  rpc ImportExternal(ImportExternalRequest) returns (ImportExternalResponse);
+}

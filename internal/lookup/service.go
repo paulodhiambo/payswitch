@@ -74,6 +74,14 @@ func (s *Service) Lookup(ctx context.Context, bic string) (*BankInfo, error) {
 	return info, nil
 }
 
+func (s *Service) ResolveBIC(ctx context.Context, bic string) (string, string, error) {
+	info, err := s.Lookup(ctx, bic)
+	if err != nil {
+		return "", "", err
+	}
+	return info.Name, info.Country, nil
+}
+
 func (s *Service) Register(b *BankInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
