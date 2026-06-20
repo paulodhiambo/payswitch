@@ -1,3 +1,5 @@
 .idea/
 bin/
 *.test
+bin/
+gateway
