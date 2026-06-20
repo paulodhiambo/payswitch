@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -11,30 +12,34 @@ import (
 	"switch/internal/orchestrator/domain"
 	"switch/internal/orchestrator/ports"
 	"switch/internal/orchestrator/saga"
+	"switch/pkg/middleware"
 )
 
 type PaymentRequest struct {
 	EndToEndID     string `json:"end_to_end_id"`
-	SourceBIC      string `json:"source_bic"`
 	DestinationBIC string `json:"destination_bic"`
-	SourceAccount  string `json:"source_account"`
 	DestAccount    string `json:"dest_account"`
 	Amount         int64  `json:"amount"`
 	Currency       string `json:"currency"`
 }
 
 type PaymentResponse struct {
-	ID     string              `json:"id"`
-	Status domain.PaymentStatus `json:"status"`
+	ID      string              `json:"id"`
+	Status  domain.PaymentStatus `json:"status"`
+}
+
+type ParticipantResolver interface {
+	GetBankForParticipant(ctx context.Context, id string) (bic, account string, err error)
 }
 
 type Handler struct {
-	repo ports.PaymentRepository
-	saga *saga.Saga
+	repo       ports.PaymentRepository
+	saga       *saga.Saga
+	resolver   ParticipantResolver
 }
 
-func NewHandler(repo ports.PaymentRepository, s *saga.Saga) *Handler {
-	return &Handler{repo: repo, saga: s}
+func NewHandler(repo ports.PaymentRepository, s *saga.Saga, resolver ParticipantResolver) *Handler {
+	return &Handler{repo: repo, saga: s, resolver: resolver}
 }
 
 func (h *Handler) Register(r chi.Router) {
@@ -43,6 +48,18 @@ func (h *Handler) Register(r chi.Router) {
 }
 
 func (h *Handler) SubmitPayment(w http.ResponseWriter, r *http.Request) {
+	participantID, ok := r.Context().Value(middleware.ParticipantCtxKey).(string)
+	if !ok {
+		http.Error(w, `{"error":"participant identity required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	sourceBIC, sourceAccount, err := h.resolver.GetBankForParticipant(r.Context(), participantID)
+	if err != nil {
+		http.Error(w, `{"error":"unknown participant"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var req PaymentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
@@ -52,9 +69,9 @@ func (h *Handler) SubmitPayment(w http.ResponseWriter, r *http.Request) {
 	payment := &domain.Payment{
 		ID:             uuid.New().String(),
 		EndToEndID:     req.EndToEndID,
-		SourceBIC:      req.SourceBIC,
+		SourceBIC:      sourceBIC,
 		DestinationBIC: req.DestinationBIC,
-		SourceAccount:  req.SourceAccount,
+		SourceAccount:  sourceAccount,
 		DestAccount:    req.DestAccount,
 		Amount:         req.Amount,
 		Currency:       req.Currency,

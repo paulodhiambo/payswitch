@@ -17,8 +17,10 @@ import (
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
 	"switch/internal/orchestrator/sweep"
+	"switch/internal/participant"
 	"switch/pkg/config"
 	"switch/pkg/eventbus"
+	"switch/pkg/middleware"
 	"switch/pkg/outbox"
 )
 
@@ -39,8 +41,18 @@ func main() {
 
 	repo := db.NewPaymentRepo(pool)
 	bank := saga.NewMockBankClient()
-	bank.SetBalance("SOURCE", 1_000_00)
-	bank.SetBalance("DEST", 0)
+	bank.SetBalance("ACC-A", 1_000_00)
+	bank.SetBalance("ACC-B", 0)
+
+	participantReg := participant.NewRegistry()
+	for _, p := range []*participant.Participant{
+		{ID: "bank-a", Name: "Bank A", BIC: "BANKUS33", Account: "ACC-A"},
+		{ID: "bank-b", Name: "Bank B", BIC: "BANKDEFF", Account: "ACC-B"},
+	} {
+		if err := participantReg.Register(p); err != nil {
+			log.Fatalf("register participant: %v", err)
+		}
+	}
 
 	complianceClient := compliance.New()
 
@@ -51,7 +63,7 @@ func main() {
 		&saga.CommitStep{Repo: repo, Bank: bank},
 	)
 
-	h := gateway.NewHandler(repo, paymentSaga)
+	h := gateway.NewHandler(repo, paymentSaga, participantReg)
 
 	r := chi.NewRouter()
 	h.Register(r)
@@ -71,14 +83,14 @@ func main() {
 
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
-		Handler:      r,
+		Handler:      handlerWithDevParticipant(r, participantReg),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
-		log.Printf("gateway listening on %s", cfg.HTTPAddr)
+		log.Printf("gateway listening on %s (dev mode: bank-a injected)", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}
@@ -96,4 +108,15 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
 	}
+}
+
+func handlerWithDevParticipant(next http.Handler, reg *participant.Registry) http.Handler {
+	p, err := reg.GetByID(context.Background(), "bank-a")
+	if err != nil {
+		log.Fatalf("dev participant: %v", err)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, p.ID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

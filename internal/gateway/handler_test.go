@@ -17,6 +17,8 @@ import (
 	"switch/internal/gateway"
 	"switch/internal/orchestrator/domain"
 	"switch/internal/orchestrator/saga"
+	"switch/internal/participant"
+	"switch/pkg/middleware"
 )
 
 type memRepo struct {
@@ -78,12 +80,15 @@ func (r *memRepo) MarkReserved(_ context.Context, id string, ttl time.Duration) 
 	return nil
 }
 
-func setupHandler() *chi.Mux {
+func setupHandler() http.Handler {
 	repo := newMemRepo()
 	bank := saga.NewMockBankClient()
-	bank.SetBalance("SOURCE", 1_000_00)
-	bank.SetBalance("DEST", 0)
+	bank.SetBalance("ACC-A", 1_000_00)
+	bank.SetBalance("ACC-B", 0)
 	complianceClient := compliance.New()
+
+	reg := participant.NewRegistry()
+	reg.Register(&participant.Participant{ID: "test-participant", BIC: "BANKUS33", Account: "ACC-A"})
 
 	s := saga.New(
 		&saga.ValidateStep{Repo: repo},
@@ -92,21 +97,23 @@ func setupHandler() *chi.Mux {
 		&saga.CommitStep{Repo: repo, Bank: bank},
 	)
 
-	h := gateway.NewHandler(repo, s)
+	h := gateway.NewHandler(repo, s, reg)
 	r := chi.NewRouter()
 	h.Register(r)
-	return r
+
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx := context.WithValue(req.Context(), middleware.ParticipantCtxKey, "test-participant")
+		r.ServeHTTP(w, req.WithContext(ctx))
+	})
 }
 
 func TestSubmitPayment_Success(t *testing.T) {
-	r := setupHandler()
+	handler := setupHandler()
 
 	body := map[string]any{
 		"end_to_end_id":   "e2e-001",
-		"source_bic":      "BANKUS33",
 		"destination_bic": "BANKDEFF",
-		"source_account":  "SOURCE",
-		"dest_account":    "DEST",
+		"dest_account":    "ACC-B",
 		"amount":          500_00,
 		"currency":        "USD",
 	}
@@ -115,7 +122,7 @@ func TestSubmitPayment_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 
@@ -126,14 +133,12 @@ func TestSubmitPayment_Success(t *testing.T) {
 }
 
 func TestSubmitPayment_InvalidAmount(t *testing.T) {
-	r := setupHandler()
+	handler := setupHandler()
 
 	body := map[string]any{
 		"end_to_end_id":   "e2e-002",
-		"source_bic":      "BANKUS33",
 		"destination_bic": "BANKDEFF",
-		"source_account":  "SOURCE",
-		"dest_account":    "DEST",
+		"dest_account":    "ACC-B",
 		"amount":          -100,
 		"currency":        "USD",
 	}
@@ -142,13 +147,13 @@ func TestSubmitPayment_InvalidAmount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestSubmitPayment_MissingFields(t *testing.T) {
-	r := setupHandler()
+	handler := setupHandler()
 
 	body := map[string]any{
 		"end_to_end_id": "e2e-003",
@@ -159,20 +164,18 @@ func TestSubmitPayment_MissingFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestGetPayment_Found(t *testing.T) {
-	r := setupHandler()
+	handler := setupHandler()
 
 	body := map[string]any{
 		"end_to_end_id":   "e2e-get-001",
-		"source_bic":      "BANKUS33",
 		"destination_bic": "BANKDEFF",
-		"source_account":  "SOURCE",
-		"dest_account":    "DEST",
+		"dest_account":    "ACC-B",
 		"amount":          250_00,
 		"currency":        "USD",
 	}
@@ -181,12 +184,12 @@ func TestGetPayment_Found(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/payments", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
 	getReq := httptest.NewRequest(http.MethodGet, "/payments/e2e-get-001", nil)
 	getW := httptest.NewRecorder()
-	r.ServeHTTP(getW, getReq)
+	handler.ServeHTTP(getW, getReq)
 
 	require.Equal(t, http.StatusOK, getW.Code)
 
@@ -197,11 +200,11 @@ func TestGetPayment_Found(t *testing.T) {
 }
 
 func TestGetPayment_NotFound(t *testing.T) {
-	r := setupHandler()
+	handler := setupHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/payments/nonexistent", nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
