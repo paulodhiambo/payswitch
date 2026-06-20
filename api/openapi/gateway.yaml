@@ -1,0 +1,201 @@
+openapi: "3.0.3"
+info:
+  title: Payment Switch Gateway
+  description: |
+    REST/JSON API for submitting and querying cross-border payments.
+    All requests require mTLS (client certificate) for participant
+    authentication and an Idempotency-Key header for duplicate detection.
+
+    Internal service-to-service communication uses gRPC (not documented here).
+  version: "1.0.0"
+  contact:
+    name: Payment Switch Team
+
+servers:
+  - url: https://api.payment-switch.example.com
+    description: Production
+  - url: https://sandbox.payment-switch.example.com
+    description: Sandbox
+
+security:
+  - mtlsAuth: []
+
+paths:
+  /payments:
+    post:
+      summary: Submit a payment
+      description: |
+        Initiates a payment from the authenticated participant (source) to a
+        destination bank. The payment progresses through the saga:
+        RECEIVED → VALIDATED → SCREENED → RESERVED → COMMITTED.
+
+        On failure the saga rolls back with compensation and the payment ends
+        in ABORTED state.
+      operationId: submitPayment
+      tags: [Payments]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: |
+            Unique key for idempotent request deduplication. The gateway uses
+            SetNX on Redis — duplicate keys within the TTL window return 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentRequest"
+      responses:
+        "201":
+          description: Payment submitted and saga completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Duplicate Idempotency-Key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /payments/{end_to_end_id}:
+    get:
+      summary: Get payment status
+      description: Returns the current status of a payment by its EndToEndId.
+      operationId: getPayment
+      tags: [Payments]
+      parameters:
+        - name: end_to_end_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ISO20022 EndToEndId used when submitting the payment
+      responses:
+        "200":
+          description: Payment found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+        "404":
+          description: Payment not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    mtlsAuth:
+      type: mutualTLS
+      description: |
+        Participant identifies itself via a client certificate (mTLS). The
+        gateway extracts the participant ID from the certificate thumbprint
+        using the CertRegistry and resolves the source BIC + account from
+        the participant registry.
+
+  schemas:
+    PaymentRequest:
+      type: object
+      required:
+        - end_to_end_id
+        - destination_bic
+        - dest_account
+        - amount
+        - currency
+      properties:
+        end_to_end_id:
+          type: string
+          description: ISO20022 EndToEndId — used as the lookup key for GET
+          example: "E2E-20250620-001"
+        destination_bic:
+          type: string
+          description: BIC of the destination bank
+          example: "BANKDEFF"
+        dest_account:
+          type: string
+          description: Account identifier at the destination bank
+          example: "DE89370400440532013000"
+        amount:
+          type: integer
+          description: Amount in minor units (cents). Never use float for money.
+          example: 50000
+        currency:
+          type: string
+          description: ISO 4217 currency code
+          minLength: 3
+          maxLength: 3
+          example: "USD"
+
+    PaymentResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Internal payment UUID
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        status:
+          $ref: "#/components/schemas/PaymentStatus"
+
+    PaymentStatus:
+      type: string
+      enum:
+        - RECEIVED
+        - VALIDATED
+        - QUOTED
+        - SCREENED
+        - RESERVED
+        - COMMITTED
+        - ABORTED
+      description: |
+        Current state of the payment in the saga:
+        * RECEIVED — initial state on creation
+        * VALIDATED — format and field checks passed
+        * QUOTED — FX rate quoted (reserved for future use)
+        * SCREENED — compliance screening cleared
+        * RESERVED — funds reserved at source bank (5 min TTL)
+        * COMMITTED — destination bank credited, payment complete
+        * ABORTED — saga rolled back after failure
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: "insufficient balance"
+
+  responses:
+    BadRequest:
+      description: Invalid request (missing fields, bad JSON, etc.)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid client certificate
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Server-side error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
