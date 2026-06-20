@@ -450,13 +450,77 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 
 ## Contributing
 
-_Add your actual contribution workflow here_ — e.g. branch naming,
-required checks before a PR is mergeable (lint/test/test-integration all
-green), and code owners for the riskier packages (`orchestrator`, `outbox`,
-`crypto`).
+### Branch naming
+
+- `feat/<description>` — new features
+- `fix/<description>` — bug fixes
+- `docs/<description>` — documentation only
+- `chore/<description>` — CI, tooling, refactors with no behaviour change
+
+Use hyphens as separators (e.g. `feat/add-settlement-step`).
+
+### PR workflow
+
+1. Create a branch from `main`.
+2. Make your changes.
+3. Run the required checks locally:
+
+   ```bash
+   make vet          # go vet ./...
+   make test         # unit tests with -race
+   ```
+
+4. If your changes touch integration-testable code, also run:
+
+   ```bash
+   make test-integration   # requires Docker
+   ```
+
+5. Open a PR against `main` with a clear description of what changed and
+   why. The CI pipeline (`lint` → `test` → `test-integration`) must pass
+   before merging.
+
+### Required checks for merge
+
+| Check | What it runs | Fail = block merge |
+|-------|-------------|--------------------|
+| Lint  | `go vet ./...` + `staticcheck` | Yes |
+| Test  | `go test ./cmd/... ./internal/... ./pkg/... -race -count=1` | Yes |
+| Build | `make build` (all 11 binaries) | Yes |
+| Integration | `go test ./test/integration/... -race -timeout=180s` | Yes |
+| Proto | Generated stubs are up to date with `.proto` files | Reviewer discretion |
+
+### Code owners
+
+A `CODEOWNERS` file at `.github/CODEOWNERS` defines who must review
+changes to sensitive paths:
+
+```
+# Default owners (everyone on the team)
+* @team-leads
+
+# Saga orchestration — incorrect state transitions could lose money
+/internal/orchestrator/  @core-payments
+
+# Transactional outbox — data loss risk
+/pkg/outbox/  @core-payments
+
+# ISO20022 / crypto — regulatory correctness
+/pkg/iso20022/  @compliance-lead
+/pkg/crypto/    @compliance-lead
+
+# ScyllaDB ledger — audit trail integrity
+/pkg/ledger/  @core-payments
+
+# Kubernetes manifests — production reliability
+/deploy/k8s/  @platform-team
+
+# gRPC + REST specs — API contract
+/api/  @api-owners
+```
+
+Add or adjust the team aliases to match your GitHub org.
 
 ## License
 
-_Add your chosen license here_ (e.g. MIT, Apache-2.0) and a `LICENSE` file
-at the repo root. Not specified in the source document this README was
-refined from.
+MIT. See [LICENSE](LICENSE).

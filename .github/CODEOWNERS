@@ -1,0 +1,21 @@
+# Default owners
+* @team-leads
+
+# Saga orchestration — incorrect state transitions could lose money
+/internal/orchestrator/  @core-payments
+
+# Transactional outbox — data loss risk
+/pkg/outbox/  @core-payments
+
+# ISO20022 / crypto — regulatory correctness
+/pkg/iso20022/  @compliance-lead
+/pkg/crypto/    @compliance-lead
+
+# ScyllaDB ledger — audit trail integrity
+/pkg/ledger/  @core-payments
+
+# Kubernetes manifests — production reliability
+/deploy/k8s/  @platform-team
+
+# gRPC + REST specs — API contract
+/api/  @api-owners
