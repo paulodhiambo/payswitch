@@ -6,6 +6,46 @@ import (
 	routingpb "switch/api/proto/routing"
 )
 
+type GRPCClient struct {
+	client routingpb.RoutingClient
+}
+
+func NewGRPCClient(client routingpb.RoutingClient) *GRPCClient {
+	return &GRPCClient{client: client}
+}
+
+func (c *GRPCClient) FindRouteClient(ctx context.Context, sourceBIC, destBIC, currency string) (int64, int, error) {
+	resp, err := c.client.FindRoute(ctx, &routingpb.FindRouteRequest{
+		SourceBic:      sourceBIC,
+		DestinationBic: destBIC,
+		Currency:       currency,
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	r := resp.GetRoute()
+	return r.GetFee(), int(r.GetEstimatedMs()), nil
+}
+
+func (c *GRPCClient) FindRoute(ctx context.Context, sourceBIC, destBIC, currency string) (*Route, error) {
+	resp, err := c.client.FindRoute(ctx, &routingpb.FindRouteRequest{
+		SourceBic:      sourceBIC,
+		DestinationBic: destBIC,
+		Currency:       currency,
+	})
+	if err != nil {
+		return nil, err
+	}
+	r := resp.GetRoute()
+	return &Route{
+		SourceBIC:      r.GetSourceBic(),
+		DestinationBIC: r.GetDestinationBic(),
+		Currency:       r.GetCurrency(),
+		Fee:            r.GetFee(),
+		EstimatedMs:    int(r.GetEstimatedMs()),
+	}, nil
+}
+
 type GRPCServer struct {
 	routingpb.UnimplementedRoutingServer
 	svc *Service

@@ -1,6 +1,7 @@
 package reconciliation
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -24,6 +25,18 @@ type Service struct {
 
 func New() *Service {
 	return &Service{records: make([]Record, 0)}
+}
+
+func (s *Service) AddRecordClient(_ context.Context, paymentID, sourceBIC, destBIC string, amount int64, currency, status string) error {
+	s.AddRecord(Record{
+		PaymentID: paymentID,
+		SourceBIC: sourceBIC,
+		DestBIC:   destBIC,
+		Amount:    amount,
+		Currency:  currency,
+		Status:    status,
+	})
+	return nil
 }
 
 func (s *Service) AddRecord(r Record) {

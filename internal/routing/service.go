@@ -40,6 +40,14 @@ func (s *Service) seedDefaults() {
 	}
 }
 
+func (s *Service) FindRouteClient(ctx context.Context, sourceBIC, destBIC, currency string) (int64, int, error) {
+	route, err := s.FindRoute(ctx, sourceBIC, destBIC, currency)
+	if err != nil {
+		return 0, 0, err
+	}
+	return route.Fee, route.EstimatedMs, nil
+}
+
 func (s *Service) FindRoute(_ context.Context, sourceBIC, destBIC, currency string) (*Route, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

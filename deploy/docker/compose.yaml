@@ -1,5 +1,30 @@
 services:
 
+  kong:
+    image: kong:3.8
+    ports:
+      - "8443:8443"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yaml
+      KONG_PROXY_LISTEN: "0.0.0.0:8443 http2 ssl"
+      KONG_SSL_CERT: /certs/server-cert.pem
+      KONG_SSL_KEY: /certs/server-key.pem
+      KONG_SSL_CLIENT_CERT: "on"
+      KONG_SSL_CLIENT_CA: /certs/ca-cert.pem
+      KONG_SSL_VERIFY_DEPTH: 2
+      KONG_LOG_LEVEL: notice
+    volumes:
+      - ../kong/kong.yaml:/etc/kong/kong.yaml
+      - ./certs:/certs
+    depends_on:
+      gateway: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -54,7 +79,6 @@ services:
       args:
         SERVICE: gateway
     ports:
-      - "8080:8080"
       - "9095:9095"
     environment:
       HTTP_ADDR: ":8080"
@@ -69,6 +93,11 @@ services:
       postgres: { condition: service_healthy }
       redpanda: { condition: service_healthy }
       redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   compliance-service:
     build:

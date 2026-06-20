@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-config
+  namespace: payment-switch
+data:
+  kong.yaml: |
+    _format_version: "3.0"
+    _transform: true
+    services:
+      - name: payment-service
+        host: gateway
+        port: 8080
+        protocol: http
+        routes:
+          - name: payments
+            paths:
+              - /payments
+            strip_path: false
+            methods:
+              - POST
+              - GET
+            plugins:
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - X-Participant-Id:$ssl_client_s_dn
+              - name: rate-limiting
+                config:
+                  minute: 200
+                  policy: local
+          - name: health
+            paths:
+              - /healthz
+            strip_path: false
+            methods:
+              - GET
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong
+  namespace: payment-switch
+spec:
+  ports:
+    - port: 8443
+      targetPort: 8443
+  selector:
+    app: kong
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  namespace: payment-switch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+    spec:
+      containers:
+        - name: kong
+          image: kong:3.8
+          ports:
+            - containerPort: 8443
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: /etc/kong/kong.yaml
+            - name: KONG_PROXY_LISTEN
+              value: "0.0.0.0:8443 http2 ssl"
+            - name: KONG_SSL_CERT
+              value: /certs/server-cert.pem
+            - name: KONG_SSL_KEY
+              value: /certs/server-key.pem
+            - name: KONG_SSL_CLIENT_CERT
+              value: "on"
+            - name: KONG_SSL_CLIENT_CA
+              value: /certs/ca-cert.pem
+            - name: KONG_SSL_VERIFY_DEPTH
+              value: "2"
+          volumeMounts:
+            - name: kong-config
+              mountPath: /etc/kong
+            - name: certs
+              mountPath: /certs
+      volumes:
+        - name: kong-config
+          configMap:
+            name: kong-config
+        - name: certs
+          secret:
+            secretName: kong-certs

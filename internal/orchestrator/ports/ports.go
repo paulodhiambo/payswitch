@@ -43,6 +43,14 @@ type SettlementClient interface {
 	Submit(ctx context.Context, p *domain.Payment) error
 }
 
+type ReconciliationClient interface {
+	AddRecordClient(ctx context.Context, paymentID, sourceBIC, destBIC string, amount int64, currency, status string) error
+}
+
+type RoutingClient interface {
+	FindRouteClient(ctx context.Context, sourceBIC, destBIC, currency string) (fee int64, estimatedMs int, err error)
+}
+
 type OutboxWriter interface {
 	Write(ctx context.Context, topic, key string, event any) error
 }

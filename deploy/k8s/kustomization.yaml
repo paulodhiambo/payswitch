@@ -16,6 +16,7 @@ resources:
   - redis.yaml
   - redpanda.yaml
   - gateway.yaml
+  - kong.yaml
   - audit-service.yaml
   - compliance-service.yaml
   - lookup-service.yaml

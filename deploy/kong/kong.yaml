@@ -1,0 +1,32 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: payment-service
+    host: gateway
+    port: 8080
+    protocol: http
+    routes:
+      - name: payments
+        paths:
+          - /payments
+        strip_path: false
+        methods:
+          - POST
+          - GET
+        plugins:
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - X-Participant-Id:$ssl_client_s_dn
+          - name: rate-limiting
+            config:
+              minute: 200
+              policy: local
+      - name: health
+        paths:
+          - /healthz
+        strip_path: false
+        methods:
+          - GET

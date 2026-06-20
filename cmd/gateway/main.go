@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +26,8 @@ import (
 	"switch/internal/notification"
 	"switch/internal/orchestrator/ports"
 	"switch/internal/quoting"
+	"switch/internal/reconciliation"
+	"switch/internal/routing"
 	"switch/internal/settlement"
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
@@ -86,10 +87,13 @@ func main() {
 	lookupClient := resolveLookupClient(cfg)
 	quotingClient := resolveQuotingClient(cfg)
 	notificationClient := resolveNotificationClient(cfg)
+	routingClient := resolveRoutingClient(cfg)
+	reconciliationClient := resolveReconciliationClient(cfg)
 
 	sagaSteps := []saga.Step{
 		&saga.ValidateStep{Repo: repo},
 		&saga.LookupStep{Client: lookupClient, Repo: repo},
+		&saga.RouteStep{Client: routingClient, Repo: repo},
 		&saga.QuoteStep{Client: quotingClient, Repo: repo},
 		&saga.ScreenStep{Client: complianceClient, Repo: repo},
 		&saga.ReserveStep{Repo: repo, Bank: bank, TTL: saga.DefaultReservationTTL},
@@ -101,7 +105,10 @@ func main() {
 		sagaSteps = append(sagaSteps, &saga.SettleStep{Client: settlementClient, Repo: repo})
 	}
 
-	sagaSteps = append(sagaSteps, &saga.NotifyStep{Client: notificationClient})
+	sagaSteps = append(sagaSteps,
+		&saga.RecordReconciliationStep{Client: reconciliationClient, Repo: repo},
+		&saga.NotifyStep{Client: notificationClient},
+	)
 
 	paymentSaga := saga.New(sagaSteps...)
 
@@ -124,7 +131,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-
+	r.Use(kongAuthMiddleware(participantReg))
 	r.Use(metricsMiddleware)
 	h.Register(r)
 
@@ -143,30 +150,18 @@ func main() {
 	go sw.Run(ctx, 30*time.Second)
 	log.Printf("reservation sweeper started (poll interval: 30s)")
 
-	tlsConfig, err := buildTLSConfig(cfg)
-	if err != nil {
-		log.Fatalf("tls config: %v", err)
-	}
-
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
-		Handler:      handlerWithDevParticipant(r, participantReg),
+		Handler:      r,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
-		TLSConfig:    tlsConfig,
 	}
 
 	go func() {
-		log.Printf("gateway listening on %s (dev mode: bank-a injected)", cfg.HTTPAddr)
-		if tlsConfig != nil {
-			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("serve: %v", err)
-			}
-		} else {
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("serve: %v", err)
-			}
+		log.Printf("gateway listening on %s", cfg.HTTPAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("serve: %v", err)
 		}
 	}()
 
@@ -224,36 +219,54 @@ func resolveNotificationClient(cfg *config.Config) ports.NotificationClient {
 	return notification.New()
 }
 
+func resolveRoutingClient(_ *config.Config) ports.RoutingClient {
+	return routing.New()
+}
+
+func resolveReconciliationClient(_ *config.Config) ports.ReconciliationClient {
+	return reconciliation.New()
+}
+
+func kongAuthMiddleware(reg *participant.Registry) func(http.Handler) http.Handler {
+	devParticipant, devErr := reg.GetByID(context.Background(), "bank-a")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			subject := r.Header.Get("X-Participant-Id")
+			if subject != "" {
+				participantID := parseCN(subject)
+				if _, err := reg.GetByID(r.Context(), participantID); err == nil {
+					ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, participantID)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				log.Printf("kong auth: unknown participant %q from subject %q, falling back to dev", participantID, subject)
+			}
+			if devErr == nil {
+				ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, devParticipant.ID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		})
+	}
+}
+
+func parseCN(subject string) string {
+	for _, part := range strings.Split(subject, ",") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "CN=") {
+			return strings.TrimPrefix(part, "CN=")
+		}
+	}
+	return subject
+}
+
 func resolveSettlementClient(cfg *config.Config) ports.SettlementClient {
 	conn, err := grpc.NewClient(cfg.SettlementAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("connect settlement: %v", err)
 	}
 	return settlement.NewGRPCClient(settlementpb.NewSettlementClient(conn))
-}
-
-func buildTLSConfig(cfg *config.Config) (*tls.Config, error) {
-	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
-		return nil, nil
-	}
-	cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	if cfg.TLSCAFile != "" {
-		caData, err := os.ReadFile(cfg.TLSCAFile)
-		if err != nil {
-			return nil, err
-		}
-		pool.AppendCertsFromPEM(caData)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
-		MinVersion:   tls.VersionTLS12,
-	}, nil
 }
 
 func metricsMiddleware(next http.Handler) http.Handler {
@@ -263,13 +276,4 @@ func metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func handlerWithDevParticipant(next http.Handler, reg *participant.Registry) http.Handler {
-	p, err := reg.GetByID(context.Background(), "bank-a")
-	if err != nil {
-		log.Fatalf("dev participant: %v", err)
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, p.ID)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
+

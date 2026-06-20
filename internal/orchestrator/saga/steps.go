@@ -64,6 +64,26 @@ func (s *LookupStep) Compensate(_ context.Context, _ *domain.Payment) error {
 	return nil
 }
 
+type RouteStep struct {
+	Client ports.RoutingClient
+	Repo   ports.PaymentRepository
+}
+
+func (s *RouteStep) Name() string { return "route" }
+
+func (s *RouteStep) Execute(ctx context.Context, p *domain.Payment) error {
+	fee, estimatedMs, err := s.Client.FindRouteClient(ctx, p.SourceBIC, p.DestinationBIC, p.Currency)
+	if err != nil {
+		return fmt.Errorf("find route: %w", err)
+	}
+	slog.Debug("route found", "source", p.SourceBIC, "dest", p.DestinationBIC, "fee", fee, "estimated_ms", estimatedMs)
+	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusValidated)
+}
+
+func (s *RouteStep) Compensate(_ context.Context, _ *domain.Payment) error {
+	return nil
+}
+
 type QuoteStep struct {
 	Client ports.QuotingClient
 	Repo   ports.PaymentRepository
@@ -179,6 +199,24 @@ func (s *SettleStep) Compensate(ctx context.Context, p *domain.Payment) error {
 	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusAborted)
 }
 
+type RecordReconciliationStep struct {
+	Client ports.ReconciliationClient
+	Repo   ports.PaymentRepository
+}
+
+func (s *RecordReconciliationStep) Name() string { return "record_reconciliation" }
+
+func (s *RecordReconciliationStep) Execute(ctx context.Context, p *domain.Payment) error {
+	if err := s.Client.AddRecordClient(ctx, p.ID, p.SourceBIC, p.DestinationBIC, p.Amount, p.Currency, string(p.Status)); err != nil {
+		slog.Warn("reconciliation record failed", "payment_id", p.ID, "error", err)
+	}
+	return nil
+}
+
+func (s *RecordReconciliationStep) Compensate(_ context.Context, _ *domain.Payment) error {
+	return nil
+}
+
 type NotifyStep struct {
 	Client ports.NotificationClient
 }
@@ -186,10 +224,14 @@ type NotifyStep struct {
 func (s *NotifyStep) Name() string { return "notify" }
 
 func (s *NotifyStep) Execute(ctx context.Context, p *domain.Payment) error {
-	_ = s.Client.NotifyClient(ctx, p.SourceBIC, "webhook", "Payment Processed",
-		"Your payment has been processed.", p.ID, string(p.Status))
-	_ = s.Client.NotifyClient(ctx, p.DestinationBIC, "webhook", "Payment Received",
-		"A payment has been credited to your account.", p.ID, string(p.Status))
+	if err := s.Client.NotifyClient(ctx, p.SourceBIC, "webhook", "Payment Processed",
+		"Your payment has been processed.", p.ID, string(p.Status)); err != nil {
+		slog.Warn("notify source failed", "payment_id", p.ID, "error", err)
+	}
+	if err := s.Client.NotifyClient(ctx, p.DestinationBIC, "webhook", "Payment Received",
+		"A payment has been credited to your account.", p.ID, string(p.Status)); err != nil {
+		slog.Warn("notify destination failed", "payment_id", p.ID, "error", err)
+	}
 	return nil
 }
 
