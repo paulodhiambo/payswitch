@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.12">
+  <FIToFICstmrCdtTrf>
+    <GrpHdr>
+      <MsgId>PAYMENT-20250620-001</MsgId>
+      <CreDtTm>2025-06-20T10:30:00Z</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <TtlIntrBkSttlmAmt Ccy="USD">500.00</TtlIntrBkSttlmAmt>
+      <IntrBkSttlmDt>2025-06-20</IntrBkSttlmDt>
+      <SttlmInf>
+        <SttlmMtd>CLRG</SttlmMtd>
+      </SttlmInf>
+    </GrpHdr>
+    <CdtTrfTxInf>
+      <PmtId>
+        <InstrId>INSTR-001</InstrId>
+        <EndToEndId>E2E-20250620-001</EndToEndId>
+        <TxId>TX-001</TxId>
+        <UETR>5c4f5e3a-9b8a-4f2e-8d7c-1a2b3c4d5e6f</UETR>
+      </PmtId>
+      <IntrBkSttlmAmt Ccy="USD">500.00</IntrBkSttlmAmt>
+      <ChrgBr>CRED</ChrgBr>
+      <Dbtr>
+        <Nm>ACME Corp</Nm>
+        <Id>
+          <OrgId>
+            <BICOrBEI>BANKUS33</BICOrBEI>
+          </OrgId>
+        </Id>
+      </Dbtr>
+      <DbtrAcct>
+        <IBAN>US123456789</IBAN>
+      </DbtrAcct>
+      <DbtrAgt>
+        <FinInstnId>
+          <BICFI>BANKUS33</BICFI>
+        </FinInstnId>
+      </DbtrAgt>
+      <CdtrAgt>
+        <FinInstnId>
+          <BICFI>BANKDEFF</BICFI>
+        </FinInstnId>
+      </CdtrAgt>
+      <Cdtr>
+        <Nm>Euro Import GmbH</Nm>
+      </Cdtr>
+      <CdtrAcct>
+        <IBAN>DE89370400440532013000</IBAN>
+      </CdtrAcct>
+      <Purp>
+        <Cd>SUPP</Cd>
+      </Purp>
+      <RmtInf>
+        <Ustrd>Invoice INV-2025-001</Ustrd>
+      </RmtInf>
+    </CdtTrfTxInf>
+  </FIToFICstmrCdtTrf>
+</Document>

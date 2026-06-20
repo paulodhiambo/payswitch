@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.14">
+  <FIToFIPmtStsRpt>
+    <GrpHdr>
+      <MsgId>STATUS-20250620-001</MsgId>
+      <CreDtTm>2025-06-20T10:31:00Z</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <TtlIntrBkSttlmAmt Ccy="USD">500.00</TtlIntrBkSttlmAmt>
+      <IntrBkSttlmDt>2025-06-20</IntrBkSttlmDt>
+      <SttlmInf>
+        <SttlmMtd>CLRG</SttlmMtd>
+      </SttlmInf>
+    </GrpHdr>
+    <TxInfAndSts>
+      <OrgnlInstrId>INSTR-001</OrgnlInstrId>
+      <OrgnlEndToEndId>E2E-20250620-001</OrgnlEndToEndId>
+      <OrgnlTxId>TX-001</OrgnlTxId>
+      <TxSts>ACSC</TxSts>
+      <StsRsnInf>
+        <Rsn>
+          <Cd>G000</Cd>
+        </Rsn>
+        <AddtlInf>Settlement completed successfully</AddtlInf>
+      </StsRsnInf>
+    </TxInfAndSts>
+  </FIToFIPmtStsRpt>
+</Document>

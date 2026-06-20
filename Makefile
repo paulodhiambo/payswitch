@@ -21,5 +21,18 @@ sqlc:
 tidy:
 	go mod tidy
 
+test-integration:
+	@echo "Make sure Docker is running (docker ps)"
+	go test -v -race -count=1 -timeout=180s ./test/integration/...
+
+load-smoke:
+	k6 run test/load/smoke.js
+
+load-stress:
+	k6 run test/load/gateway.js
+
+load-soak:
+	k6 run test/load/soak.js
+
 clean:
 	rm -rf bin/
