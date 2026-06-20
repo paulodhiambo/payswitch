@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"switch/internal/orchestrator/domain"
+	"switch/pkg/outbox"
 )
 
 type PaymentRepo struct {
@@ -29,11 +30,81 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 	).Scan(&p.CreatedAt, &p.UpdatedAt)
 }
 
+func (r *PaymentRepo) CreateWithEvent(ctx context.Context, p *domain.Payment) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO payment (id, end_to_end_id, source_bic, destination_bic,
+		                      source_account, dest_account, amount, currency, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING created_at, updated_at`,
+		p.ID, p.EndToEndID, p.SourceBIC, p.DestinationBIC,
+		p.SourceAccount, p.DestAccount, p.Amount, p.Currency, p.Status,
+	).Scan(&p.CreatedAt, &p.UpdatedAt); err != nil {
+		return err
+	}
+
+	if err := outbox.Write(ctx, tx, "payment.received", p.EndToEndID, domain.PaymentEvent{
+		PaymentID:  p.ID,
+		EndToEndID: p.EndToEndID,
+		ToStatus:   domain.StatusReceived,
+		SourceBIC:  p.SourceBIC,
+		DestBIC:    p.DestinationBIC,
+		Amount:     p.Amount,
+		Currency:   p.Currency,
+		Timestamp:  p.CreatedAt,
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *PaymentRepo) UpdateStatus(ctx context.Context, id string, status domain.PaymentStatus) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE payment SET status = $1, updated_at = now() WHERE id = $2`,
-		status, id)
-	return err
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var fromStatus domain.PaymentStatus
+	if err := tx.QueryRow(ctx,
+		`UPDATE payment SET status = $1, updated_at = now() WHERE id = $2
+		 RETURNING status`, status, id).Scan(&fromStatus); err != nil {
+		return err
+	}
+
+	if err := r.writeEvent(ctx, tx, id, fromStatus, status); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (r *PaymentRepo) writeEvent(ctx context.Context, tx pgx.Tx, paymentID string, from, to domain.PaymentStatus) error {
+	var p domain.Payment
+	if err := tx.QueryRow(ctx,
+		`SELECT id, end_to_end_id, source_bic, destination_bic, amount, currency
+		 FROM payment WHERE id = $1`, paymentID).
+		Scan(&p.ID, &p.EndToEndID, &p.SourceBIC, &p.DestinationBIC,
+			&p.Amount, &p.Currency); err != nil {
+		return err
+	}
+
+	return outbox.Write(ctx, tx, "payment."+string(to), p.EndToEndID, domain.PaymentEvent{
+		PaymentID:  p.ID,
+		EndToEndID: p.EndToEndID,
+		FromStatus: from,
+		ToStatus:   to,
+		SourceBIC:  p.SourceBIC,
+		DestBIC:    p.DestinationBIC,
+		Amount:     p.Amount,
+		Currency:   p.Currency,
+	})
 }
 
 func (r *PaymentRepo) GetByEndToEndID(ctx context.Context, e2eID string) (*domain.Payment, error) {

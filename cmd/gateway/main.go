@@ -16,6 +16,8 @@ import (
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
 	"switch/pkg/config"
+	"switch/pkg/eventbus"
+	"switch/pkg/outbox"
 )
 
 func main() {
@@ -48,6 +50,15 @@ func main() {
 
 	r := chi.NewRouter()
 	h.Register(r)
+
+	if len(cfg.KafkaBrokers) > 0 {
+		producer := eventbus.NewProducer(cfg.KafkaBrokers)
+		relay := outbox.NewRelay(pool, producer)
+		go relay.Run(ctx, 1*time.Second)
+		log.Printf("outbox relay started (poll interval: 1s)")
+	} else {
+		log.Print("no kafka brokers configured — outbox relay disabled")
+	}
 
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,

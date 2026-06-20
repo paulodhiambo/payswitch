@@ -29,8 +29,8 @@ type PaymentResponse struct {
 }
 
 type Handler struct {
-	repo  ports.PaymentRepository
-	saga  *saga.Saga
+	repo ports.PaymentRepository
+	saga *saga.Saga
 }
 
 func NewHandler(repo ports.PaymentRepository, s *saga.Saga) *Handler {
