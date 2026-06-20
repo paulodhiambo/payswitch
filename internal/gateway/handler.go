@@ -3,16 +3,18 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	"switch/internal/orchestrator/domain"
 	"switch/internal/orchestrator/ports"
 	"switch/internal/orchestrator/saga"
 	"switch/pkg/middleware"
+	"switch/pkg/telemetry"
 )
 
 type PaymentRequest struct {
@@ -56,6 +58,7 @@ func (h *Handler) SubmitPayment(w http.ResponseWriter, r *http.Request) {
 
 	sourceBIC, sourceAccount, err := h.resolver.GetBankForParticipant(r.Context(), participantID)
 	if err != nil {
+		slog.Warn("unknown participant", "participant_id", participantID)
 		http.Error(w, `{"error":"unknown participant"}`, http.StatusUnauthorized)
 		return
 	}
@@ -78,17 +81,34 @@ func (h *Handler) SubmitPayment(w http.ResponseWriter, r *http.Request) {
 		Status:         domain.StatusReceived,
 	}
 
+	if telemetry.Tracer != nil {
+		ctx, span := telemetry.Tracer.Start(r.Context(), "submit_payment",
+			trace.WithAttributes(telemetry.SpanAttrs(payment.ID, payment.EndToEndID, string(payment.Status))...),
+		)
+		defer span.End()
+		r = r.WithContext(ctx)
+	}
+
 	if err := h.repo.Create(r.Context(), payment); err != nil {
-		log.Printf("create payment: %v", err)
+		slog.Error("create payment", "id", payment.ID, "error", err)
 		http.Error(w, `{"error":"failed to create payment"}`, http.StatusInternalServerError)
 		return
 	}
 
 	if err := h.saga.Run(r.Context(), payment); err != nil {
-		log.Printf("saga failed for %s: %v", payment.ID, err)
+		slog.Error("saga failed", "id", payment.ID, "error", err)
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
+
+	slog.Info("payment submitted",
+		"id", payment.ID,
+		"end_to_end_id", payment.EndToEndID,
+		"status", payment.Status,
+		"source", payment.SourceBIC,
+		"dest", payment.DestinationBIC,
+		"amount", payment.Amount,
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -99,6 +119,7 @@ func (h *Handler) GetPayment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	p, err := h.repo.GetByEndToEndID(r.Context(), id)
 	if err != nil {
+		slog.Warn("payment lookup failed", "id", id, "error", err)
 		http.Error(w, `{"error":"payment not found"}`, http.StatusNotFound)
 		return
 	}

@@ -22,6 +22,7 @@ import (
 	"switch/pkg/eventbus"
 	"switch/pkg/middleware"
 	"switch/pkg/outbox"
+	"switch/pkg/telemetry"
 )
 
 func main() {
@@ -32,6 +33,18 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger := telemetry.InitLogger("gateway")
+	_ = logger
+
+	if cfg.OTLPEndpoint != "" {
+		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "gateway")
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+		} else {
+			defer tp.Shutdown(ctx)
+		}
+	}
 
 	pool, err := pgxpool.New(ctx, cfg.PostgresDSN)
 	if err != nil {
