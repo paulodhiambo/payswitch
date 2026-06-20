@@ -1,4 +1,4 @@
-.PHONY: build test lint clean
+.PHONY: build test vet sqlc tidy clean
 
 build:
 	go build -o bin/gateway ./cmd/gateway
@@ -8,6 +8,9 @@ test:
 
 vet:
 	go vet ./...
+
+sqlc:
+	sqlc generate
 
 tidy:
 	go mod tidy
