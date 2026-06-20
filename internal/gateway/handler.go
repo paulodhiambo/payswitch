@@ -45,6 +45,10 @@ func NewHandler(repo ports.PaymentRepository, s *saga.Saga, resolver Participant
 }
 
 func (h *Handler) Register(r chi.Router) {
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	r.Post("/payments", h.SubmitPayment)
 	r.Get("/payments/{id}", h.GetPayment)
 }

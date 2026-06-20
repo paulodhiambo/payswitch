@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: payment-switch
+
+# TODO: generate postgres-schema ConfigMap from ../../migrations/postgres/0001_init.sql
+# kustomize edit add configmap postgres-schema --from-file=0001_init.sql=../../migrations/postgres/0001_init.sql
+configMapGenerator:
+  - name: postgres-schema
+    files:
+      - 0001_init.sql=../../migrations/postgres/0001_init.sql
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - redis.yaml
+  - redpanda.yaml
+  - gateway.yaml
+  - audit-service.yaml
+  - hpa.yaml
+  - networkpolicy.yaml
+  - keda-scaledobject.yaml

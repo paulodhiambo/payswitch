@@ -1,0 +1,18 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: gateway
+  namespace: payment-switch
+spec:
+  scaleTargetRef:
+    name: gateway
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: redpanda:9092
+        consumerGroup: gateway-orchestrator
+        topic: payment.received
+        lagThreshold: "10"
+        offsetResetPolicy: latest

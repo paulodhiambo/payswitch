@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+  namespace: payment-switch
+spec:
+  ports:
+    - name: kafka
+      port: 9092
+    - name: admin
+      port: 9644
+  selector:
+    app: redpanda
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redpanda
+  namespace: payment-switch
+spec:
+  serviceName: redpanda
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redpanda
+  template:
+    metadata:
+      labels:
+        app: redpanda
+    spec:
+      containers:
+        - name: redpanda
+          image: docker.redpanda.com/redpandadata/redpanda:v24.3.4
+          ports:
+            - containerPort: 9092
+            - containerPort: 9644
+          env:
+            - name: REDPANDA_AUTO_CREATE_TOPICS_ENABLED
+              value: "true"
+          command:
+            - redpanda
+            - start
+            - --smp
+            - "1"
+            - --memory
+            - "1G"
+            - --overprovisioned
+            - --kafka-addr
+            - "0.0.0.0:9092"
+            - --advertise-kafka-addr
+            - "redpanda:9092"
+            - --set
+            - redpanda.auto_create_topics_enabled=true
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
