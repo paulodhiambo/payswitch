@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/payment;paymentpb";
+
+message Payment {
+  string id = 1;
+  string end_to_end_id = 2;
+  string source_bic = 3;
+  string destination_bic = 4;
+  string source_account = 5;
+  string dest_account = 6;
+  int64 amount = 7;            // minor units (cents)
+  string currency = 8;         // ISO 4217
+  string status = 9;           // PaymentStatus enum value
+  optional string quote_id = 10;
+  optional string reserved_at = 11;  // RFC 3339
+  optional string expires_at = 12;   // RFC 3339
+  string created_at = 13;            // RFC 3339
+  string updated_at = 14;            // RFC 3339
+}
+
+message PaymentEvent {
+  string payment_id = 1;
+  string end_to_end_id = 2;
+  string from_status = 3;
+  string to_status = 4;
+  string source_bic = 5;
+  string dest_bic = 6;
+  int64 amount = 7;
+  string currency = 8;
+  string timestamp = 9;        // RFC 3339
+}
+
+message PaymentRequest {
+  string end_to_end_id = 1;
+  string destination_bic = 2;
+  string dest_account = 3;
+  int64 amount = 4;
+  string currency = 5;
+  string participant_id = 6;
+}
+
+message PaymentResponse {
+  string id = 1;
+  string status = 2;
+}
+
+message StatusRequest {
+  string id = 1;
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  RECEIVED = 1;
+  VALIDATED = 2;
+  QUOTED = 3;
+  SCREENED = 4;
+  RESERVED = 5;
+  COMMITTED = 6;
+  ABORTED = 7;
+}

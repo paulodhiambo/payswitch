@@ -1,4 +1,4 @@
-.PHONY: build test vet sqlc tidy clean
+.PHONY: build test vet proto sqlc tidy clean
 
 build:
 	go build -o bin/gateway ./cmd/gateway
@@ -8,6 +8,12 @@ test:
 
 vet:
 	go vet ./...
+
+proto:
+	protoc --go_out=. --go_opt=module=switch \
+	       --go-grpc_out=. --go-grpc_opt=module=switch \
+	       -I api/proto \
+	       api/proto/*.proto
 
 sqlc:
 	sqlc generate

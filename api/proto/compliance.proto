@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/compliance;compliancepb";
+
+import "payment.proto";
+
+service Compliance {
+  // Screen a payment against sanctions/regulatory lists.
+  rpc Screen(ScreenRequest) returns (ScreenResponse);
+}
+
+message ScreenRequest {
+  Payment payment = 1;
+  string participant_id = 2;
+}
+
+message ScreenResponse {
+  bool cleared = 1;
+  string reason = 2;
+}

@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/orchestrator;orchestratorpb";
+
+import "payment.proto";
+
+service Orchestrator {
+  // Submit a payment through the saga (RECEIVED → COMMITTED or ABORTED).
+  rpc SubmitPayment(PaymentRequest) returns (PaymentResponse);
+
+  // Get the current status of a payment.
+  rpc GetPaymentStatus(StatusRequest) returns (PaymentResponse);
+
+  // List payments in a given status (pagination stub).
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
+
+  // Trigger compensation for an existing payment.
+  rpc CompensatePayment(CompensateRequest) returns (CompensateResponse);
+}
+
+message ListPaymentsRequest {
+  string status_filter = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPaymentsResponse {
+  repeated Payment payments = 1;
+  string next_page_token = 2;
+}
+
+message CompensateRequest {
+  string payment_id = 1;
+}
+
+message CompensateResponse {
+  bool accepted = 1;
+}

@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/settlement;settlementpb";
+
+import "payment.proto";
+
+service Settlement {
+  // Submit a completed payment for net settlement.
+  rpc SubmitForSettlement(Payment) returns (SettlementAck);
+
+  // Trigger settlement of the current window.
+  rpc SettleWindow(SettleWindowRequest) returns (SettleWindowResponse);
+
+  // Get net positions for the current window.
+  rpc GetNetPositions(NetPositionRequest) returns (NetPositionResponse);
+}
+
+message SettlementAck {
+  bool accepted = 1;
+  string window_id = 2;
+}
+
+message SettleWindowRequest {
+  string window_id = 1;
+}
+
+message SettleWindowResponse {
+  repeated NetPosition positions = 1;
+  string window_id = 2;
+}
+
+message NetPosition {
+  string bic = 1;
+  int64 amount = 2;   // net amount; positive = receives, negative = pays
+  string currency = 3;
+}
+
+message NetPositionRequest {
+  string window_id = 1;
+}
+
+message NetPositionResponse {
+  repeated NetPosition positions = 1;
+}

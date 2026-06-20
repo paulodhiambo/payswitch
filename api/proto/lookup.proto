@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package switch.v1;
+
+option go_package = "switch/api/proto/lookup;lookuppb";
+
+service Lookup {
+  // Resolve a BIC to bank information.
+  rpc ResolveBIC(BICRequest) returns (BICResponse);
+
+  // Search banks by name or country.
+  rpc SearchBanks(SearchRequest) returns (SearchResponse);
+}
+
+message BICRequest {
+  string bic = 1;
+}
+
+message BICResponse {
+  string bic = 1;
+  string name = 2;
+  string country = 3;
+  repeated string supported_currencies = 4;
+  string routing_info = 5;
+}
+
+message SearchRequest {
+  string query = 1;
+  string country = 2;
+  int32 page_size = 3;
+}
+
+message SearchResponse {
+  repeated BICResponse results = 1;
+}
