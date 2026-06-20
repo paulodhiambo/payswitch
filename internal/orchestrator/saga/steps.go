@@ -64,6 +64,29 @@ func (s *LookupStep) Compensate(_ context.Context, _ *domain.Payment) error {
 	return nil
 }
 
+type QuoteStep struct {
+	Client ports.QuotingClient
+	Repo   ports.PaymentRepository
+}
+
+func (s *QuoteStep) Name() string { return "quote" }
+
+func (s *QuoteStep) Execute(ctx context.Context, p *domain.Payment) error {
+	quoteID, fee, total, err := s.Client.GetQuoteClient(ctx, p.SourceBIC, p.DestinationBIC, p.Amount, p.Currency)
+	if err != nil {
+		return fmt.Errorf("get quote: %w", err)
+	}
+	slog.Debug("quote obtained", "quote_id", quoteID, "fee", fee, "total", total)
+	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusQuoted); err != nil {
+		return fmt.Errorf("update status to QUOTED: %w", err)
+	}
+	return nil
+}
+
+func (s *QuoteStep) Compensate(ctx context.Context, p *domain.Payment) error {
+	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusAborted)
+}
+
 type ScreenStep struct {
 	Client ports.ComplianceClient
 	Repo   ports.PaymentRepository
@@ -154,4 +177,22 @@ func (s *SettleStep) Execute(ctx context.Context, p *domain.Payment) error {
 
 func (s *SettleStep) Compensate(ctx context.Context, p *domain.Payment) error {
 	return s.Repo.UpdateStatus(ctx, p.ID, domain.StatusAborted)
+}
+
+type NotifyStep struct {
+	Client ports.NotificationClient
+}
+
+func (s *NotifyStep) Name() string { return "notify" }
+
+func (s *NotifyStep) Execute(ctx context.Context, p *domain.Payment) error {
+	_ = s.Client.NotifyClient(ctx, p.SourceBIC, "webhook", "Payment Processed",
+		"Your payment has been processed.", p.ID, string(p.Status))
+	_ = s.Client.NotifyClient(ctx, p.DestinationBIC, "webhook", "Payment Received",
+		"A payment has been credited to your account.", p.ID, string(p.Status))
+	return nil
+}
+
+func (s *NotifyStep) Compensate(_ context.Context, _ *domain.Payment) error {
+	return nil
 }

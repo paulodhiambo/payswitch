@@ -18,12 +18,16 @@ import (
 
 	compliancepb "switch/api/proto/compliance"
 	lookuppb "switch/api/proto/lookup"
+	notificationpb "switch/api/proto/notification"
+	quotingpb "switch/api/proto/quoting"
 	settlementpb "switch/api/proto/settlement"
 	"switch/internal/compliance"
-	"switch/internal/lookup"
-	"switch/internal/orchestrator/ports"
-	"switch/internal/settlement"
 	"switch/internal/gateway"
+	"switch/internal/lookup"
+	"switch/internal/notification"
+	"switch/internal/orchestrator/ports"
+	"switch/internal/quoting"
+	"switch/internal/settlement"
 	"switch/internal/orchestrator/db"
 	"switch/internal/orchestrator/saga"
 	"switch/internal/orchestrator/sweep"
@@ -80,10 +84,13 @@ func main() {
 
 	complianceClient := resolveComplianceClient(cfg)
 	lookupClient := resolveLookupClient(cfg)
+	quotingClient := resolveQuotingClient(cfg)
+	notificationClient := resolveNotificationClient(cfg)
 
 	sagaSteps := []saga.Step{
 		&saga.ValidateStep{Repo: repo},
 		&saga.LookupStep{Client: lookupClient, Repo: repo},
+		&saga.QuoteStep{Client: quotingClient, Repo: repo},
 		&saga.ScreenStep{Client: complianceClient, Repo: repo},
 		&saga.ReserveStep{Repo: repo, Bank: bank, TTL: saga.DefaultReservationTTL},
 		&saga.CommitStep{Repo: repo, Bank: bank},
@@ -93,6 +100,8 @@ func main() {
 		settlementClient := resolveSettlementClient(cfg)
 		sagaSteps = append(sagaSteps, &saga.SettleStep{Client: settlementClient, Repo: repo})
 	}
+
+	sagaSteps = append(sagaSteps, &saga.NotifyStep{Client: notificationClient})
 
 	paymentSaga := saga.New(sagaSteps...)
 
@@ -191,6 +200,28 @@ func resolveLookupClient(cfg *config.Config) ports.LookupClient {
 		return lookup.NewGRPCClient(lookuppb.NewLookupClient(conn))
 	}
 	return lookup.New(nil)
+}
+
+func resolveQuotingClient(cfg *config.Config) ports.QuotingClient {
+	if cfg.QuotingAddr != "" {
+		conn, err := grpc.NewClient(cfg.QuotingAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect quoting: %v", err)
+		}
+		return quoting.NewGRPCClient(quotingpb.NewQuotingClient(conn))
+	}
+	return quoting.New()
+}
+
+func resolveNotificationClient(cfg *config.Config) ports.NotificationClient {
+	if cfg.NotificationAddr != "" {
+		conn, err := grpc.NewClient(cfg.NotificationAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect notification: %v", err)
+		}
+		return notification.NewGRPCClient(notificationpb.NewNotificationClient(conn))
+	}
+	return notification.New()
 }
 
 func resolveSettlementClient(cfg *config.Config) ports.SettlementClient {

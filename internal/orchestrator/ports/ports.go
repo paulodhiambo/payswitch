@@ -31,6 +31,14 @@ type LookupClient interface {
 	ResolveBIC(ctx context.Context, bic string) (name, country string, err error)
 }
 
+type QuotingClient interface {
+	GetQuoteClient(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (quoteID string, fee int64, total int64, err error)
+}
+
+type NotificationClient interface {
+	NotifyClient(ctx context.Context, participantID, channel, title, body, paymentID, status string) error
+}
+
 type SettlementClient interface {
 	Submit(ctx context.Context, p *domain.Payment) error
 }

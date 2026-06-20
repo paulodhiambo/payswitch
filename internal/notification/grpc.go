@@ -15,6 +15,26 @@ func NewGRPCServer(svc *Service) *GRPCServer {
 	return &GRPCServer{svc: svc}
 }
 
+type GRPCClient struct {
+	client notificationpb.NotificationClient
+}
+
+func NewGRPCClient(client notificationpb.NotificationClient) *GRPCClient {
+	return &GRPCClient{client: client}
+}
+
+func (c *GRPCClient) NotifyClient(ctx context.Context, participantID, channel, title, body, paymentID, status string) error {
+	_, err := c.client.Notify(ctx, &notificationpb.NotificationRequest{
+		ParticipantId: participantID,
+		Channel:       channel,
+		Title:         title,
+		Body:          body,
+		PaymentId:     paymentID,
+		Status:        status,
+	})
+	return err
+}
+
 func (s *GRPCServer) Notify(ctx context.Context, req *notificationpb.NotificationRequest) (*notificationpb.NotificationResponse, error) {
 	err := s.svc.Notify(ctx, &NotificationRequest{
 		ParticipantID: req.GetParticipantId(),

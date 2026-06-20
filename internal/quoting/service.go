@@ -66,6 +66,14 @@ func (s *Service) GetQuote(ctx context.Context, sourceBIC, destBIC string, amoun
 	return q, nil
 }
 
+func (s *Service) GetQuoteClient(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (string, int64, int64, error) {
+	q, err := s.GetQuote(ctx, sourceBIC, destBIC, amount, currency)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	return q.ID, q.Fee, q.Total, nil
+}
+
 func (s *Service) AcceptQuote(ctx context.Context, quoteID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

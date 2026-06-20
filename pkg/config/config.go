@@ -17,7 +17,9 @@ type Config struct {
 	TLSCAFile     string   `mapstructure:"TLS_CA_FILE"`
 	ComplianceAddr string  `mapstructure:"COMPLIANCE_ADDR"`
 	LookupAddr    string   `mapstructure:"LOOKUP_ADDR"`
-	SettlementAddr string  `mapstructure:"SETTLEMENT_ADDR"`
+	SettlementAddr   string `mapstructure:"SETTLEMENT_ADDR"`
+	QuotingAddr     string `mapstructure:"QUOTING_ADDR"`
+	NotificationAddr string `mapstructure:"NOTIFICATION_ADDR"`
 }
 
 func Load() (*Config, error) {
@@ -32,6 +34,8 @@ func Load() (*Config, error) {
 	v.SetDefault("COMPLIANCE_ADDR", "localhost:9091")
 	v.SetDefault("LOOKUP_ADDR", "localhost:9092")
 	v.SetDefault("SETTLEMENT_ADDR", "localhost:9093")
+	v.SetDefault("QUOTING_ADDR", "localhost:9094")
+	v.SetDefault("NOTIFICATION_ADDR", "")
 
 	var c Config
 	if err := v.Unmarshal(&c); err != nil {
