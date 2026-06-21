@@ -24,12 +24,11 @@ tls:
 http:
   routers:
     # ── Traefik dashboard (production) ───────────────────────────────────────
-    # Port 8080, open to the internet, secured by HTTP basic auth.
-    # Credentials are loaded from Docker secret at /run/secrets/dashboard_users
-    # (htpasswd format: user:$apr1$...).  Generate with pre-deploy.sh.
+    # Uses Traefik v3's built-in 'traefik' entrypoint (port 8080).
+    # Secured by HTTP basic auth — credentials from Docker secret dashboard_users.
     dashboard:
       entryPoints:
-        - dashboard
+        - traefik
       rule: "PathPrefix(`/`)"
       service: api@internal
       middlewares:
