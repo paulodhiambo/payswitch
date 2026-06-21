@@ -54,11 +54,6 @@ func (c *Client) ReverseCredit(ctx context.Context, bic, account string, amount 
 	})
 }
 
-type bankRequest struct {
-	Account string `json:"account"`
-	Amount  int64  `json:"amount"`
-}
-
 type bankResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
