@@ -151,7 +151,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	r.Use(kongAuthMiddleware(participantReg))
+	r.Use(tlsAuthMiddleware(participantReg))
 	r.Use(metricsMiddleware)
 	h.Register(r)
 
@@ -261,15 +261,14 @@ func resolveReconciliationClient(cfg *config.Config) ports.ReconciliationClient 
 	return reconciliation.New()
 }
 
-func kongAuthMiddleware(reg *participant.Registry) func(http.Handler) http.Handler {
+func tlsAuthMiddleware(reg *participant.Registry) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			subject := r.Header.Get("X-Participant-Id")
-			if subject != "" {
-				// Kong set the header: extract the CN and reject if unknown.
+			// Kong: X-Participant-Id contains the client cert Subject DN.
+			if subject := r.Header.Get("X-Participant-Id"); subject != "" {
 				participantID := parseCN(subject)
 				if _, err := reg.GetByID(r.Context(), participantID); err != nil {
-					log.Printf("kong auth: unknown participant %q from subject %q", participantID, subject)
+					log.Printf("auth: unknown participant %q from subject %q", participantID, subject)
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
@@ -277,7 +276,19 @@ func kongAuthMiddleware(reg *participant.Registry) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			// No X-Participant-Id: dev-mode fallback (Kong not in the path).
+			// Traefik: X-Forwarded-Tls-Client-Cert-Info with Subject="CN=bank-a,..."
+			if info := r.Header.Get("X-Forwarded-Tls-Client-Cert-Info"); info != "" {
+				participantID := parseCN(info)
+				if _, err := reg.GetByID(r.Context(), participantID); err != nil {
+					log.Printf("auth: unknown participant %q from TLS info %q", participantID, info)
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				ctx := context.WithValue(r.Context(), middleware.ParticipantCtxKey, participantID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			// No client cert: dev-mode fallback (gateway not behind Traefik/Kong).
 			p, err := reg.GetByID(r.Context(), "bank-a")
 			if err != nil {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)

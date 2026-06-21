@@ -109,7 +109,7 @@ services:
   certgen:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: certgen
     working_dir: /certs
@@ -161,7 +161,7 @@ services:
   auth-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: auth-service
     ports:
@@ -175,79 +175,30 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # API gateway (Kong + payment-switch gateway)
+  # API gateway (Traefik + payment-switch gateway)
   # ---------------------------------------------------------------------------
 
-  kong-migrations:
-    image: kong:3.8
-    environment:
-      KONG_PG_HOST: postgres
-      KONG_PG_USER: switch
-      KONG_PG_PASSWORD: switch
-      KONG_PG_DATABASE: switch
-    depends_on:
-      postgres: { condition: service_healthy }
-      certgen: { condition: service_completed_successfully }
-    command: ["kong", "migrations", "bootstrap"]
-    restart: "no"
-
-  kong:
-    image: kong:3.8
+  traefik:
+    image: traefik:v3.3
     ports:
       - "8443:8443"   # HTTPS + mTLS — bank payment API
-      - "8000:8000"   # HTTP — portal API forward-auth
-      - "8001:8001"   # Kong Admin API
-      - "8002:8002"   # Kong Manager Admin GUI
-    environment:
-      KONG_DATABASE: "postgres"
-      KONG_PG_HOST: postgres
-      KONG_PG_USER: switch
-      KONG_PG_PASSWORD: switch
-      KONG_PG_DATABASE: switch
-      KONG_PLUGINS: "bundled,forward-auth,opentelemetry"
-      KONG_PROXY_LISTEN: "0.0.0.0:8443 http2 ssl, 0.0.0.0:8000"
-      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
-      KONG_ADMIN_GUI_LISTEN: "0.0.0.0:8002"
-      KONG_ADMIN_GUI_URL: "http://localhost:8002"
-      # OpenTelemetry tracing — spans exported to Uptrace
-      KONG_TRACING_INSTRUMENTATIONS: "all"
-      KONG_TRACING_SAMPLING_RATE: "1"
-      # Server TLS — cert presented to connecting clients
-      KONG_SSL_CERT: /certs/server-cert.pem
-      KONG_SSL_CERT_KEY: /certs/server-key.pem
-      # mTLS — require and verify client certificates via NGINX directive injection
-      KONG_NGINX_PROXY_SSL_CLIENT_CERTIFICATE: /certs/ca-cert.pem
-      KONG_NGINX_PROXY_SSL_VERIFY_CLIENT: "optional"
-      KONG_NGINX_PROXY_SSL_VERIFY_DEPTH: "2"
-      KONG_LOG_LEVEL: notice
+      - "8000:8000"   # HTTP — portal API + SPA
     volumes:
-      - ../kong/plugins/forward-auth:/usr/local/share/lua/5.1/kong/plugins/forward-auth:ro
+      - ../traefik/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      - ../traefik/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
       - certs:/certs:ro
     depends_on:
-      kong-migrations: { condition: service_completed_successfully }
-      gateway: { condition: service_healthy }
-      auth-service: { condition: service_healthy }
+      certgen: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD", "kong", "health"]
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  # Seeds Kong services, routes, and the global OpenTelemetry plugin
-  # via Admin API after Kong is healthy. Restart:no so it runs once.
-  kong-seed:
-    image: alpine:latest
-    entrypoint: ["/bin/sh", "-c", "apk add --no-cache curl bash >/dev/null 2>&1 && bash /etc/kong/setup.sh"]
-    volumes:
-      - ../kong/setup.sh:/etc/kong/setup.sh:ro
-    depends_on:
-      kong: { condition: service_healthy }
-    restart: "no"
-
   gateway:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: gateway
     ports:
@@ -286,7 +237,7 @@ services:
   compliance-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: compliance-service
     ports:
@@ -301,7 +252,7 @@ services:
   lookup-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: lookup-service
     ports:
@@ -318,7 +269,7 @@ services:
   settlement-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: settlement-service
     ports:
@@ -333,7 +284,7 @@ services:
   quoting-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: quoting-service
     ports:
@@ -348,7 +299,7 @@ services:
   notification-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: notification-service
     ports:
@@ -363,7 +314,7 @@ services:
   routing-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: routing-service
     ports:
@@ -378,7 +329,7 @@ services:
   reconciliation-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: reconciliation-service
     ports:
@@ -393,7 +344,7 @@ services:
   audit-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: audit-service
     environment:
@@ -410,7 +361,7 @@ services:
   bank-service:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: deploy/docker/Dockerfile.service
       args:
         SERVICE: bank-service
     ports:

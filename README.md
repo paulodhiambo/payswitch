@@ -57,12 +57,12 @@ The system has two separate entry points with distinct auth mechanisms:
          │                                       │
          ▼                                       ▼
  ┌───────────────────┐            ┌──────────────────────────┐
- │  Kong API Gateway │            │  Authentik Outpost        │
- │  (mTLS :8443)     │            │  (session cookie + TOTP)  │
- │  • client cert    │            │  • validates session      │
- │  • rate limiting  │            │  • injects identity hdrs  │
- │  • X-Participant- │            │  • redirects to login     │
- │    Id injection   │            └──────────────┬────────────┘
+  │  Traefik API Gateway │            │  Authentik Outpost        │
+  │  (mTLS :8443)     │            │  (session cookie + TOTP)  │
+  │  • client cert    │            │  • validates session      │
+  │  • rate limiting  │            │  • injects identity hdrs  │
+  │  • TLS client     │            │  • redirects to login     │
+  │    cert header    │            └──────────────┬────────────┘
  └────────┬──────────┘                           │
           │                                      ▼
           ▼                            ┌──────────────────────┐
@@ -188,9 +188,9 @@ All config via environment variables (see [pkg/config/config.go](pkg/config/conf
 | `SETTLEMENT_ADDR` | `localhost:9093` | Gateway's client address for settlement-service |
 | `QUOTING_ADDR` | `localhost:9094` | Gateway's client address for quoting-service (empty = in-process) |
 | `NOTIFICATION_ADDR` | `""` | Gateway's client address for notification-service (empty = in-process) |
-| `TLS_CERT_FILE` | `""` | *(deprecated — mTLS now handled by Kong)* |
-| `TLS_KEY_FILE` | `""` | *(deprecated — mTLS now handled by Kong)* |
-| `TLS_CA_FILE` | `""` | *(deprecated — mTLS now handled by Kong)* |
+| `TLS_CERT_FILE` | `""` | *(deprecated — mTLS now handled by Traefik)* |
+| `TLS_KEY_FILE` | `""` | *(deprecated — mTLS now handled by Traefik)* |
+| `TLS_CA_FILE` | `""` | *(deprecated — mTLS now handled by Traefik)* |
 
 A binary only reads the variables it actually uses — `lookup-service`
 ignores `POSTGRES_DSN`, for instance. There's no per-service config
@@ -252,8 +252,7 @@ GRPC_ADDR=:9091 go run ./cmd/compliance-service &
 # 4. Start the gateway (plain HTTP, internal)
 go run ./cmd/gateway
 
-# 5. (Optional) Start Kong for mTLS — or test directly on :8080 without auth
-# docker run -d --name kong ... (see deploy/docker/compose.yaml for reference)
+# 5. (Optional) Start Traefik for mTLS — or test directly on :8080 without auth
 ```
 
 For the full stack (BIC lookup, settlement, quotes, notifications), start
@@ -267,7 +266,7 @@ GRPC_ADDR=:9094 go run ./cmd/quoting-service &
 GRPC_ADDR=:9095 go run ./cmd/notification-service &
 ```
 
-Or use Docker Compose for the complete setup including Kong mTLS:
+Or use Docker Compose for the complete setup including Traefik mTLS:
 
 ```bash
 go run ./cmd/certgen    # generates ca-*, server-*, client-* certs
@@ -275,7 +274,7 @@ cp *.pem deploy/docker/certs/
 docker compose -f deploy/docker/compose.yaml up --build
 ```
 
-This starts Postgres, Redis, Redpanda, Kong (:8443 with mTLS), and all
+This starts Postgres, Redis, Redpanda, Traefik (:8443 with mTLS), and all
 microservices. Test with:
 
 ```bash
@@ -307,12 +306,12 @@ make load-soak     # 30 VUs / 10 min — sustained run, watch for leaks/drift
 
 ### Headers
 
-In production, Kong terminates mTLS, verifies the client certificate against
-the CA, and injects the client certificate subject DN as the
-`X-Participant-Id` header. The gateway parses the `CN=` field from the
-subject and resolves the participant ID via the participant registry.
-Locally (without Kong), the gateway falls back to a dev-mode participant
-(`bank-a`).
+In production, Traefik terminates mTLS, verifies the client certificate
+against the CA, and injects the client certificate Subject CN as
+`X-Forwarded-Tls-Client-Cert-Info`. The gateway parses the `CN=` field
+from the header and resolves the participant ID via the participant
+registry.  Locally (without Traefik), the gateway falls back to a dev-mode
+participant (`bank-a`).
 
 ### Content negotiation
 
@@ -401,7 +400,7 @@ systems.
 
 | Hostname | Auth layer | Auth mechanism |
 |---|---|---|
-| `api.payment-switch.example.com` | Kong (mTLS) | Client certificate |
+| `api.payment-switch.example.com` | Traefik (mTLS) | Client certificate |
 | `portal.payment-switch.example.com` | Authentik Outpost | Session cookie + TOTP MFA |
 
 **Authentik** acts as both IdP and reverse proxy for the portal. Its outpost
@@ -564,9 +563,9 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 - **Transactional outbox** for reliable event publishing (no dual-write)
 - **`FOR UPDATE SKIP LOCKED`** for sweeper and outbox relay concurrency
 - **sqlc** for type-safe Postgres queries (no hand-written ORM)
-- **mTLS** terminated at Kong API Gateway — client certificate subject DN is
-  injected as `X-Participant-Id` header; the gateway parses `CN=` to resolve
-  the participant identity.
+- **mTLS** terminated at Traefik — client certificate Subject CN is injected
+  via the `X-Forwarded-Tls-Client-Cert-Info` header; the gateway parses `CN=`
+  to resolve the participant identity.
 - **Async saga execution**: `POST /payments` returns `202 Accepted`
   immediately after basic validation and persistence. The saga runs in a
   background goroutine and delivers the final status via pacs.002 callback
@@ -577,10 +576,10 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 
 ## Known Limitations / Roadmap
 
-- **Kong rate-limiting**: a basic `rate-limiting` plugin is configured with
-  200 requests/minute per client IP. No Redis-backed distributed rate
-  limiting or per-participant quotas are set up yet.
-- **Kong mTLS CA management**: client CA rotation and revocation are manual
+- **Rate limiting**: built-in rate limiting is configured per-route with
+  local (in-memory) counters. No Redis-backed distributed rate limiting or
+  per-participant quotas are set up yet.
+- **mTLS CA management**: client CA rotation and revocation are manual
   (no OCSP stapling or CRL distribution).
 - **Circuit breaker / retry**: gRPC client calls in saga steps have no
   resilience wrapping today. `pkg/resilience` exists but is not wired into
