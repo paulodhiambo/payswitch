@@ -1,5 +1,7 @@
 # Payment Switch
 
+[![CI](https://github.com/paulodhiambo/payswitch/actions/workflows/ci.yaml/badge.svg)](https://github.com/paulodhiambo/payswitch/actions/workflows/ci.yaml)
+
 A real-time payment switch built in Go using a hexagonal (ports-and-adapters)
 architecture with a hand-rolled saga orchestration pattern. It accepts
 ISO20022-style payment instructions, runs them through validation,
