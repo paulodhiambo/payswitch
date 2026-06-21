@@ -94,13 +94,14 @@ jobs:
           ARGS: -avz --delete --exclude='.git' --exclude='node_modules' --exclude='.github'
       - name: Deploy with Docker Compose
         uses: appleboy/ssh-action@v1
+        timeout-minutes: 60
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ubuntu
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             cd /opt/payswitch
-            docker compose -f deploy/docker/compose.yaml up --build -d
+            COMPOSE_PARALLEL_LIMIT=1 docker compose -f deploy/docker/compose.yaml up --build -d
 
   docker:
     if: github.ref == 'refs/heads/main'
