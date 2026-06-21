@@ -552,6 +552,7 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 2. **test** — unit tests with `-race` + build all binaries
 3. **test-integration** — Docker-backed integration tests
 4. **docker** — Buildx matrix build + push to GHCR (main branch only)
+5. **deploy** — rsyncs repo to VPS and runs `docker compose up --build -d`
 
 ---
 
