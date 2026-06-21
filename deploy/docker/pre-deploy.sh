@@ -81,29 +81,7 @@ else
   echo "--> Network ${NETWORK_NAME} already exists."
 fi
 
-# ── 6. Run database migrations ────────────────────────────────────────────────
-# Runs a one-shot postgres client container on the overlay network.
-# Services on the overlay (postgres) are reachable by name.
-# Migrations are applied in alphabetical order; each script is idempotent
-# (uses IF NOT EXISTS / ON CONFLICT DO NOTHING patterns).
-echo "--> Running database migrations..."
-docker run --rm \
-  --network "${NETWORK_NAME}" \
-  --volume "${MIGRATIONS_DIR}:/schema:ro" \
-  --env PGPASSWORD=switch \
-  postgres:16-alpine \
-  sh -c '
-    echo "Waiting for postgres..."
-    until pg_isready -h postgres -U switch -q; do sleep 2; done
-    echo "Applying migrations..."
-    for f in $(ls /schema/*.sql | sort); do
-      echo "  applying $f..."
-      psql -h postgres -U switch -d switch -f "$f" -q
-    done
-    echo "Migrations complete."
-  '
-
-# ── 7. Docker secret: dashboard_users ────────────────────────────────────────
+# ── 6. Docker secret: dashboard_users ────────────────────────────────────────
 # htpasswd-format credentials for the Traefik dashboard basic-auth middleware.
 # Uses APR1 (MD5-based) — compatible with all Traefik versions.
 # To rotate: docker secret rm dashboard_users && re-run this script.
@@ -130,6 +108,24 @@ CSRF_SECRET="${CSRF_SECRET}" \
     --resolve-image always \
     -c "${DEPLOY_DIR}/deploy/docker/stack.yaml" \
     "${STACK_NAME}"
+
+# ── 9. Run database migrations (after stack deploy — postgres must be up) ────
+echo "--> Running database migrations..."
+docker run --rm \
+  --network "${NETWORK_NAME}" \
+  --volume "${MIGRATIONS_DIR}:/schema:ro" \
+  --env PGPASSWORD=switch \
+  postgres:16-alpine \
+  sh -c '
+    echo "Waiting for postgres..."
+    until pg_isready -h postgres -U switch -q; do sleep 2; done
+    echo "Applying migrations..."
+    for f in $(ls /schema/*.sql | sort); do
+      echo "  applying $f..."
+      psql -h postgres -U switch -d switch -f "$f" -q
+    done
+    echo "Migrations complete."
+  '
 
 echo "==> Deploy complete!"
 echo ""
