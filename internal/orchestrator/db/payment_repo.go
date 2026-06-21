@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,6 +13,20 @@ import (
 	"switch/internal/orchestrator/domain"
 	"switch/pkg/outbox"
 )
+
+func textOrNull(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+func dateOrNull(t time.Time) pgtype.Date {
+	if t.IsZero() {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: t, Valid: true}
+}
 
 type PaymentRepo struct {
 	pool *pgxpool.Pool
@@ -27,15 +42,25 @@ func NewPaymentRepo(pool *pgxpool.Pool) *PaymentRepo {
 
 func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 	sqlcPayment, err := r.q.CreatePayment(ctx, sqlc.CreatePaymentParams{
-		ID:             p.ID,
-		EndToEndID:     p.EndToEndID,
-		SourceBic:      p.SourceBIC,
-		DestinationBic: p.DestinationBIC,
-		SourceAccount:  p.SourceAccount,
-		DestAccount:    p.DestAccount,
-		Amount:         p.Amount,
-		Currency:       p.Currency,
-		Status:         string(p.Status),
+		ID:               p.ID,
+		EndToEndID:       p.EndToEndID,
+		SourceBic:        p.SourceBIC,
+		DestinationBic:   p.DestinationBIC,
+		SourceAccount:    p.SourceAccount,
+		DestAccount:      p.DestAccount,
+		Amount:           p.Amount,
+		Currency:         p.Currency,
+		Status:           string(p.Status),
+		Uetr:             textOrNull(p.UETR),
+		InstrID:          textOrNull(p.InstrID),
+		ChargeBearer:     textOrNull(p.ChargeBearer),
+		SttlmDt:          dateOrNull(p.SettlementDate),
+		DebtorName:       textOrNull(p.DebtorName),
+		CreditorName:     textOrNull(p.CreditorName),
+		PurposeCode:      textOrNull(p.PurposeCode),
+		RemittanceInfo:   textOrNull(p.RemittanceInfo),
+		RouteFee:         pgtype.Int8{Int64: p.RouteFee, Valid: true},
+		RouteEstimatedMs: pgtype.Int4{Int32: int32(p.RouteEstimatedMs), Valid: true},
 	})
 	if err != nil {
 		return err
@@ -62,6 +87,16 @@ func (r *PaymentRepo) CreateWithEvent(ctx context.Context, p *domain.Payment) er
 		Amount:         p.Amount,
 		Currency:       p.Currency,
 		Status:         string(p.Status),
+		Uetr:           textOrNull(p.UETR),
+		InstrID:        textOrNull(p.InstrID),
+		ChargeBearer:   textOrNull(p.ChargeBearer),
+		SttlmDt:        dateOrNull(p.SettlementDate),
+		DebtorName:     textOrNull(p.DebtorName),
+		CreditorName:   textOrNull(p.CreditorName),
+		PurposeCode:    textOrNull(p.PurposeCode),
+		RemittanceInfo:   textOrNull(p.RemittanceInfo),
+		RouteFee:         pgtype.Int8{Int64: p.RouteFee, Valid: true},
+		RouteEstimatedMs: pgtype.Int4{Int32: int32(p.RouteEstimatedMs), Valid: true},
 	})
 	if err != nil {
 		return err
@@ -140,7 +175,7 @@ func writeEventTx(ctx context.Context, q *sqlc.Queries, tx pgx.Tx, paymentID str
 		return err
 	}
 
-	return outbox.Write(ctx, tx, "payment."+string(to), row.EndToEndID, domain.PaymentEvent{
+	return outbox.Write(ctx, tx, "payment."+strings.ToLower(string(to)), row.EndToEndID, domain.PaymentEvent{
 		PaymentID:  row.ID,
 		EndToEndID: row.EndToEndID,
 		FromStatus: from,
@@ -172,6 +207,15 @@ func (r *PaymentRepo) GetByEndToEndID(ctx context.Context, e2eID string) (*domai
 		return nil, err
 	}
 	return mapFromSQLC(sqlcPayment), nil
+}
+
+func (r *PaymentRepo) UpdateRoute(ctx context.Context, id string, fee int64, estimatedMs int) error {
+	return r.q.UpdatePaymentRoute(ctx, sqlc.UpdatePaymentRouteParams{
+		RouteFee:         pgtype.Int8{Int64: fee, Valid: true},
+		RouteEstimatedMs: pgtype.Int4{Int32: int32(estimatedMs), Valid: true},
+		Status:           string(domain.StatusRouted),
+		ID:               id,
+	})
 }
 
 func (r *PaymentRepo) FindExpiredReservations(ctx context.Context, before time.Time) ([]domain.Reservation, error) {
@@ -211,11 +255,41 @@ func mapFromSQLC(s *sqlc.Payment) *domain.Payment {
 	if s.QuoteID.Valid {
 		p.QuoteID = &s.QuoteID.String
 	}
+	if s.RouteFee.Valid {
+		p.RouteFee = s.RouteFee.Int64
+	}
+	if s.RouteEstimatedMs.Valid {
+		p.RouteEstimatedMs = int(s.RouteEstimatedMs.Int32)
+	}
 	if s.ReservedAt.Valid {
 		p.ReservedAt = &s.ReservedAt.Time
 	}
 	if s.ExpiresAt.Valid {
 		p.ExpiresAt = &s.ExpiresAt.Time
+	}
+	if s.Uetr.Valid {
+		p.UETR = s.Uetr.String
+	}
+	if s.InstrID.Valid {
+		p.InstrID = s.InstrID.String
+	}
+	if s.ChargeBearer.Valid {
+		p.ChargeBearer = s.ChargeBearer.String
+	}
+	if s.SttlmDt.Valid {
+		p.SettlementDate = s.SttlmDt.Time
+	}
+	if s.DebtorName.Valid {
+		p.DebtorName = s.DebtorName.String
+	}
+	if s.CreditorName.Valid {
+		p.CreditorName = s.CreditorName.String
+	}
+	if s.PurposeCode.Valid {
+		p.PurposeCode = s.PurposeCode.String
+	}
+	if s.RemittanceInfo.Valid {
+		p.RemittanceInfo = s.RemittanceInfo.String
 	}
 	return p
 }
@@ -225,6 +299,12 @@ func mapToDomain(s *sqlc.Payment, p *domain.Payment) {
 	p.UpdatedAt = s.UpdatedAt.Time
 	if s.QuoteID.Valid {
 		p.QuoteID = &s.QuoteID.String
+	}
+	if s.RouteFee.Valid {
+		p.RouteFee = s.RouteFee.Int64
+	}
+	if s.RouteEstimatedMs.Valid {
+		p.RouteEstimatedMs = int(s.RouteEstimatedMs.Int32)
 	}
 	if s.ReservedAt.Valid {
 		p.ReservedAt = &s.ReservedAt.Time

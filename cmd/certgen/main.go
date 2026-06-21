@@ -95,7 +95,37 @@ func main() {
 	writePEM("client-bank-a-cert.pem", "CERTIFICATE", clientDER)
 	writePEM("client-bank-a-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(clientKey))
 
-	log.Print("generated dev certs: ca-cert.pem, ca-key.pem, server-cert.pem, server-key.pem, client-bank-a-*.pem")
+	for _, participant := range []struct {
+		serial int64
+		cn     string
+	}{
+		{4, "bank-b"},
+		{5, "bank-c"},
+	} {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			log.Fatal(err)
+		}
+		tmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(participant.serial),
+			Subject: pkix.Name{
+				Organization: []string{"Switch Dev Client " + participant.cn},
+				CommonName:   participant.cn,
+			},
+			NotBefore:   time.Now(),
+			NotAfter:    time.Now().Add(10 * 365 * 24 * time.Hour),
+			KeyUsage:    x509.KeyUsageDigitalSignature,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+		if err != nil {
+			log.Fatal(err)
+		}
+		writePEM("client-"+participant.cn+"-cert.pem", "CERTIFICATE", der)
+		writePEM("client-"+participant.cn+"-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(key))
+	}
+
+	log.Print("generated dev certs: ca-cert.pem, ca-key.pem, server-cert.pem, server-key.pem, client-bank-{a,b,c}-*.pem")
 }
 
 func writePEM(path, kind string, data []byte) {

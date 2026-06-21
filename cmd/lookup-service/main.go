@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -26,10 +27,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("lookup-service")
+	logger, lp, err := telemetry.InitLogger(ctx, cfg.OTLPEndpoint, "lookup-service")
+	if err != nil {
+		slog.Error("init logger", "error", err)
+		os.Exit(1)
+	}
+	if lp != nil {
+		defer lp.Shutdown(ctx)
+	}
+
+	if cfg.OTLPEndpoint != "" {
+		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "lookup-service")
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+		} else {
+			defer tp.Shutdown(ctx)
+		}
+	}
 
 	var svc *lookup.Service
 	if cfg.RedisAddr != "" {
@@ -42,7 +59,9 @@ func main() {
 
 	metrics.Listen(cfg.MetricsAddr)
 
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
 	lookuppb.RegisterLookupServer(grpcSrv, lookup.NewGRPCServer(svc))
 	reflection.Register(grpcSrv)
 

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.12">
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08 pacs.008.001.08.xsd">
   <FIToFICstmrCdtTrf>
     <GrpHdr>
       <MsgId>PAYMENT-20250620-001</MsgId>
@@ -22,30 +22,37 @@
       <ChrgBr>CRED</ChrgBr>
       <Dbtr>
         <Nm>ACME Corp</Nm>
-        <Id>
-          <OrgId>
-            <BICOrBEI>BANKUS33</BICOrBEI>
-          </OrgId>
-        </Id>
       </Dbtr>
       <DbtrAcct>
-        <IBAN>US123456789</IBAN>
+        <Id>
+          <Othr>
+            <Id>US123456789</Id>
+          </Othr>
+        </Id>
       </DbtrAcct>
       <DbtrAgt>
         <FinInstnId>
-          <BICFI>BANKUS33</BICFI>
+          <Othr>
+            <Id>BANKUS33</Id>
+          </Othr>
         </FinInstnId>
       </DbtrAgt>
       <CdtrAgt>
         <FinInstnId>
-          <BICFI>BANKDEFF</BICFI>
+          <Othr>
+            <Id>BANKDEFF</Id>
+          </Othr>
         </FinInstnId>
       </CdtrAgt>
       <Cdtr>
         <Nm>Euro Import GmbH</Nm>
       </Cdtr>
       <CdtrAcct>
-        <IBAN>DE89370400440532013000</IBAN>
+        <Id>
+          <Othr>
+            <Id>DE89370400440532013000</Id>
+          </Othr>
+        </Id>
       </CdtrAcct>
       <Purp>
         <Cd>SUPP</Cd>

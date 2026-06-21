@@ -16,6 +16,7 @@ publishing.
 - [Configuration](#configuration)
 - [Quick Start](#quick-start)
 - [API](#api)
+- [Participant Portal](#participant-portal)
 - [Protobuf Services](#protobuf-services)
 - [Project Layout](#project-layout)
 - [Observability](#observability)
@@ -31,13 +32,14 @@ publishing.
 ## Implementation Status
 
 | Component | Status |
-|---|---|
-| Gateway, saga engine (Validate/Screen/Reserve/Commit), outbox, sweeper | Implemented |
+|---|---|---|
+| Gateway + ISO 20022 (pacs.008/pacs.002), saga engine (10 steps), outbox, sweeper | Implemented |
 | `compliance-service`, `lookup-service`, `settlement-service` | Implemented as standalone gRPC services |
-| `quoting-service`, `notification-service` | Implemented as standalone gRPC services, **not yet called by the saga** — see [Known Limitations](#known-limitations--roadmap) |
+| `quoting-service`, `notification-service` | Implemented as standalone gRPC services, wired into saga |
+| `reconciliation-service`, `routing-service` | Implemented as standalone gRPC services with logic |
 | `audit-service` | Implemented (Kafka consumer, logs lifecycle events) |
 | `internal/participant`, `internal/certificate` | Implemented as libraries used by the gateway's mTLS middleware, not separate deployables |
-| `internal/reconciliation`, `internal/routing` | **Stubs** — no logic yet |
+| `portal-api` (BFF for Participant Portal) | Designed — spec at `api/openapi/portal.yaml`, architecture at `frontend.md` |
 
 If you're picking this up to extend it, this table is the actual source of
 truth on what's load-bearing versus scaffolding.
@@ -46,40 +48,67 @@ truth on what's load-bearing versus scaffolding.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Gateway (REST API :8080)                                │
-│  ├── POST /payments   (submit payment → saga)           │
-│  ├── GET  /payments/{id}  (status lookup)               │
-│  └── GET  /healthz   (k8s probe)                        │
-├─────────────────────────────────────────────────────────┤
-│  Saga Orchestrator (in-process)                         │
-│  ├── ValidateStep    (input validation)                 │
-│  ├── ScreenStep      (compliance/AML → gRPC)           │
-│  ├── ReserveStep     (hold funds, 5min TTL)             │
-│  └── CommitStep      (credit destination)               │
-├─────────────────────────────────────────────────────────┤
-│  Outbox Relay (Kafka)       │  Sweeper (reservation TTL)│
-└─────────────────────────────────────────────────────────┘
+The system has two separate entry points with distinct auth mechanisms:
 
-Microservices:
-  compliance-service  (gRPC)  — sanctions/AML screening        [called by saga]
-  lookup-service      (gRPC)  — BIC resolution + Redis cache    [standalone]
-  settlement-service  (gRPC)  — net settlement windows + ScyllaDB ledger  [standalone]
-  quoting-service     (gRPC)  — FX quote generation             [standalone, not yet in saga]
-  notification-service(gRPC)  — participant notification dispatch [standalone, not yet in saga]
-  audit-service       (Kafka) — event log consumer
+```
+ Bank systems (mTLS)                   Human operators (browser)
+         │                                       │
+         ▼                                       ▼
+ ┌───────────────────┐            ┌──────────────────────────┐
+ │  Kong API Gateway │            │  Authentik Outpost        │
+ │  (mTLS :8443)     │            │  (session cookie + TOTP)  │
+ │  • client cert    │            │  • validates session      │
+ │  • rate limiting  │            │  • injects identity hdrs  │
+ │  • X-Participant- │            │  • redirects to login     │
+ │    Id injection   │            └──────────────┬────────────┘
+ └────────┬──────────┘                           │
+          │                                      ▼
+          ▼                            ┌──────────────────────┐
+ ┌─────────────────────────────┐       │  portal-api  (BFF)   │
+ │  Gateway (REST :8080)       │       │  • transactions view │
+ │  • POST /payments (ISO 20022│       │  • bank management   │
+ │    JSON or pacs.008 XML)    │       │  • user management   │
+ │  • GET  /payments/{id}      │       │  • audit log         │
+ │  • GET  /healthz            │       └──────────────────────┘
+ └──────────┬──────────────────┘
+            │
+            ▼
+ ┌──────────────────────────────────────────────────────────┐
+ │  Saga Orchestrator (in-process, 10 sequential steps)     │
+ │  ├── ValidateStep    (input validation)                  │
+ │  ├── LookupStep      (BIC resolution → gRPC)             │
+ │  ├── RouteStep       (route selection → gRPC)            │
+ │  ├── QuoteStep       (FX + fee quote → gRPC)             │
+ │  ├── ScreenStep      (compliance/AML → gRPC)             │
+ │  ├── ReserveStep     (hold funds, 5 min TTL)             │
+ │  ├── CommitStep      (credit destination)                │
+ │  ├── SettleStep      (net settlement → gRPC, optional)   │
+ │  ├── RecordReconciliationStep (record for audit → gRPC)  │
+ │  └── NotifyStep      (webhook/push → gRPC)               │
+ ├──────────────────────────────────────────────────────────┤
+ │  Outbox Relay (Kafka)      │  Sweeper (reservation TTL)  │
+ └──────────────────────────────────────────────────────────┘
+
+Microservices (all gRPC unless noted):
+  compliance-service    — sanctions/AML screening        [called by saga]
+  lookup-service        — BIC resolution + Redis cache   [called by saga]
+  settlement-service    — net settlement + ScyllaDB ledger [optional step]
+  quoting-service       — FX quote generation            [called by saga]
+  notification-service  — participant notification        [called by saga]
+  reconciliation-service — payment record matching       [called by saga]
+  routing-service       — route + fee lookup             [called by saga]
+  audit-service (Kafka) — event log consumer
 ```
 
 mTLS authentication and participant/certificate resolution happen in the
 Gateway layer (`pkg/middleware`, `internal/participant`,
 `internal/certificate`) — see [Design Decisions](#design-decisions).
 
-> Note: the saga's four steps are the only ones currently in the critical
-> path of `POST /payments`. `lookup-service`, `settlement-service`,
-> `quoting-service`, and `notification-service` run as independent,
-> callable gRPC services, but only `compliance-service` is actually invoked
-> during payment submission today.
+> Note: the saga runs 10 steps in sequence for every payment submission.
+> `settlement-service` is optional — the `SettleStep` is only added when
+> `SETTLEMENT_ADDR` is configured. All other steps use the in-process
+> implementation unless the corresponding `*_ADDR` env var points to a
+> remote gRPC service.
 
 ---
 
@@ -89,12 +118,12 @@ Gateway layer (`pkg/middleware`, `internal/participant`,
 POST /payments
   │
   ▼
-RECEIVED ──► VALIDATED ──► SCREENED ──► RESERVED ──► COMMITTED
-                                              │
-                                          (5min TTL)
-                                              │
-                                          sweeper ──► ABORTED
-                                              (compensation)
+RECEIVED ──► VALIDATED ──► QUOTED ──► SCREENED ──► RESERVED ──► COMMITTED
+                                                          │            │
+                                                      (5min TTL)    notify
+                                                          │
+                                                     sweeper ──► ABORTED
+                                                          (compensation)
 ```
 
 All state transitions write an outbox event atomically within the same
@@ -113,12 +142,14 @@ it.
 
 | Binary | Ports (default) | Dependencies | Description |
 |--------|-------|--------------|-------------|
-| `gateway` | HTTP `:8080`, metrics `:9095` | Postgres, Kafka, Redis | REST API gateway, saga engine, outbox relay, reservation sweeper |
+| `gateway` | HTTP `:8080`, metrics `:9095` | Postgres, Kafka, Redis | REST/ISO 20022 API gateway, saga engine, outbox relay, reservation sweeper |
 | `compliance-service` | gRPC `:9090`, metrics `:9095` | — | AML/sanctions screening stub |
 | `lookup-service` | gRPC `:9090`, metrics `:9095` | Redis (optional) | BIC-to-bank resolution with cache-aside |
 | `settlement-service` | gRPC `:9090`, metrics `:9095` | ScyllaDB (optional) | Net settlement windows, ledger audit trail |
 | `quoting-service` | gRPC `:9090`, metrics `:9095` | — | FX quote generation with fee, 30s TTL |
 | `notification-service` | gRPC `:9090`, metrics `:9095` | — | Webhook/push dispatch (stub, logs to stdout) |
+| `reconciliation-service` | gRPC `:9090`, metrics `:9095` | — | Payment record matching |
+| `routing-service` | gRPC `:9090`, metrics `:9095` | — | Route and fee lookup |
 | `audit-service` | — | Kafka | Payment event consumer, logs lifecycle events |
 | `certgen` | — (CLI) | — | Dev mTLS certificate generator |
 
@@ -151,9 +182,11 @@ All config via environment variables (see [pkg/config/config.go](pkg/config/conf
 | `COMPLIANCE_ADDR` | `localhost:9091` | Gateway's client address for compliance-service |
 | `LOOKUP_ADDR` | `localhost:9092` | Gateway's client address for lookup-service |
 | `SETTLEMENT_ADDR` | `localhost:9093` | Gateway's client address for settlement-service |
-| `TLS_CERT_FILE` | `""` | TLS cert path (plain HTTP if empty) |
-| `TLS_KEY_FILE` | `""` | TLS key path |
-| `TLS_CA_FILE` | `""` | CA cert for mTLS client verification |
+| `QUOTING_ADDR` | `localhost:9094` | Gateway's client address for quoting-service (empty = in-process) |
+| `NOTIFICATION_ADDR` | `""` | Gateway's client address for notification-service (empty = in-process) |
+| `TLS_CERT_FILE` | `""` | *(deprecated — mTLS now handled by Kong)* |
+| `TLS_KEY_FILE` | `""` | *(deprecated — mTLS now handled by Kong)* |
+| `TLS_CA_FILE` | `""` | *(deprecated — mTLS now handled by Kong)* |
 
 A binary only reads the variables it actually uses — `lookup-service`
 ignores `POSTGRES_DSN`, for instance. There's no per-service config
@@ -196,25 +229,27 @@ Produces `bin/gateway`, `bin/compliance-service`, `bin/lookup-service`,
 
 ### Run a working local stack
 
-A bare `gateway` process alone **cannot** complete a payment — `ScreenStep`
-makes a gRPC call to `compliance-service`, and without it listening on
-`COMPLIANCE_ADDR` (`localhost:9091` by default), submission fails at the
-`SCREENED` stage. Minimum viable local stack:
+The quickest way to run the full stack is:
 
 ```bash
-# 1. Start Postgres
+# 1. Generate dev certificates
+go run ./cmd/certgen
+
+# 2. Start Postgres, apply schema
 docker run -d --name postgres -e POSTGRES_USER=switch -e POSTGRES_PASSWORD=switch \
   -e POSTGRES_DB=switch -p 5432:5432 postgres:16-alpine
-
-# 2. Apply schema
 export POSTGRES_DSN="postgres://switch:switch@localhost:5432/switch?sslmode=disable"
 psql "$POSTGRES_DSN" < migrations/postgres/0001_init.sql
+psql "$POSTGRES_DSN" < migrations/postgres/0002_iso20022.sql
 
 # 3. Start compliance-service on the port the gateway expects by default
 GRPC_ADDR=:9091 go run ./cmd/compliance-service &
 
-# 4. Start the gateway
+# 4. Start the gateway (plain HTTP, internal)
 go run ./cmd/gateway
+
+# 5. (Optional) Start Kong for mTLS — or test directly on :8080 without auth
+# docker run -d --name kong ... (see deploy/docker/compose.yaml for reference)
 ```
 
 For the full stack (BIC lookup, settlement, quotes, notifications), start
@@ -225,12 +260,27 @@ gateway's `*_ADDR` config:
 GRPC_ADDR=:9092 go run ./cmd/lookup-service &
 GRPC_ADDR=:9093 go run ./cmd/settlement-service &
 GRPC_ADDR=:9094 go run ./cmd/quoting-service &
-GRPC_ADDR=:9095 go run ./cmd/notification-service &   # NB: pick a free port — :9095 is also the default metrics port, override METRICS_ADDR too if running both on one host
+GRPC_ADDR=:9095 go run ./cmd/notification-service &
 ```
 
-Remember: `quoting-service` and `notification-service` will be running and
-reachable, but nothing in the saga calls them yet (see
-[Implementation Status](#implementation-status)).
+Or use Docker Compose for the complete setup including Kong mTLS:
+
+```bash
+go run ./cmd/certgen    # generates ca-*, server-*, client-* certs
+cp *.pem deploy/docker/certs/
+docker compose -f deploy/docker/compose.yaml up --build
+```
+
+This starts Postgres, Redis, Redpanda, Kong (:8443 with mTLS), and all
+microservices. Test with:
+
+```bash
+curl -k --cert client-bank-a-cert.pem --key client-bank-a-key.pem \
+  https://localhost:8443/payments \
+  -H 'Idempotency-Key: test-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"end_to_end_id":"e2e-1","destination_bic":"BANKDEFF","dest_account":"ACC-B","amount":100,"currency":"USD"}'
+```
 
 ### Generate dev mTLS certificates
 
@@ -258,51 +308,120 @@ make load-soak     # 30 VUs / 10 min — sustained run, watch for leaks/drift
 |---|---|---|
 | `Idempotency-Key` | Yes | Client-generated key. A retried request with the same key returns the original response instead of reprocessing the payment. |
 
-In production, the gateway terminates mTLS (`TLS_CA_FILE`) and resolves
-the caller's `participant_id` from the client certificate thumbprint
-(`internal/participant`, `internal/certificate`). Locally, leave the
-`TLS_*` vars unset to run over plain HTTP.
+In production, Kong terminates mTLS, verifies the client certificate against
+the CA, and injects the client certificate subject DN as the
+`X-Participant-Id` header. The gateway parses the `CN=` field from the
+subject and resolves the participant ID via the participant registry.
+Locally (without Kong), the gateway falls back to a dev-mode participant
+(`bank-a`).
+
+### Content negotiation
+
+The gateway speaks both JSON and ISO 20022 XML:
+
+| `Content-Type` | `Accept` | Behaviour |
+|---|---|---|
+| `application/json` | `application/json` (default) | JSON in, JSON out |
+| `application/xml` | `application/json` | Parse pacs.008 XML, return JSON |
+| `application/json` | `application/xml` | JSON in, return pacs.002 XML |
+| `application/xml` | `application/xml` | Parse pacs.008, return pacs.002 |
 
 ### POST /payments
+
+Minimal JSON request:
 
 ```json
 {
   "end_to_end_id": "e2e-123",
-  "source_bic": "BANKUS33",
   "destination_bic": "BANKDEFF",
-  "source_account": "ACC-A",
   "dest_account": "ACC-B",
   "amount": 10000,
   "currency": "USD"
 }
 ```
 
+Optional ISO 20022 enrichment fields (auto-generated if omitted):
+
+| Field | Default | Description |
+|---|---|---|
+| `uetr` | auto (UUID4) | SWIFT gpi Unique End-to-End Transaction Reference |
+| `instruction_id` | auto (UUID4) | Instruction identification |
+| `charge_bearer` | `"SLEV"` | `DEBT`, `CRED`, `SHAR`, or `SLEV` |
+| `settlement_date` | today | ISO date (`YYYY-MM-DD`) |
+| `debtor_name` | `""` | Originating party name |
+| `creditor_name` | `""` | Beneficiary party name |
+| `purpose_code` | `""` | ISO 20022 purpose code (e.g. `SALA`) |
+| `remittance_info` | `""` | Unstructured remittance information |
+
 Response `201` (committed):
+
 ```json
 {
-  "id": "pay_abc123",
+  "id": "b1f2e9...",
+  "uetr": "550e8400-e29b-41d4-a716-446655440000",
+  "instruction_id": "INSTR-001",
   "end_to_end_id": "e2e-123",
   "status": "COMMITTED",
-  "source_bic": "BANKUS33",
-  "destination_bic": "BANKDEFF",
+  "iso_status": "ACCP",
   "amount": 10000,
   "currency": "USD",
+  "debtor_name": "Alice Smith",
+  "creditor_name": "Bob Jones",
   "created_at": "2026-06-20T10:00:00Z"
 }
 ```
 
-On a failed/aborted payment, the same resource shape is returned with
-`"status": "ABORTED"`. Whether the response includes a reason field (e.g.
-`abort_reason`) depends on the gateway's response DTO in
-`internal/gateway` — confirm against the code and document the exact
-shape here once verified, rather than relying on this README's word for
-it.
+`iso_status` is the pacs.002 `TxSts` code derived from the domain status:
+
+| Domain status | `iso_status` |
+|---|---|
+| `RECEIVED` | `RCVD` |
+| `VALIDATED` / `QUOTED` / `SCREENED` / `RESERVED` | `PDNG` |
+| `COMMITTED` / `SETTLED` | `ACCP` |
+| `ABORTED` | `RJCT` |
+
+On a failed/aborted payment the same shape is returned with
+`"status": "ABORTED"` and `"iso_status": "RJCT"`.
 
 ### GET /payments/{id}
 
 Response `200` with the same payment object structure.
 
 Full OpenAPI spec at [api/openapi/gateway.yaml](api/openapi/gateway.yaml).
+
+---
+
+## Participant Portal
+
+A browser-based portal for switch administrators and bank staff. It is a
+separate concern from the payment gateway — it authenticates *people*, not
+systems.
+
+| Hostname | Auth layer | Auth mechanism |
+|---|---|---|
+| `api.payment-switch.example.com` | Kong (mTLS) | Client certificate |
+| `portal.payment-switch.example.com` | Authentik Outpost | Session cookie + TOTP MFA |
+
+**Authentik** acts as both IdP and reverse proxy for the portal. Its outpost
+intercepts every browser request, validates the session cookie, runs the
+login + TOTP flow for unauthenticated users, and injects identity headers
+(`X-authentik-uid`, `X-User-Role`, `X-Participant-Id`) before forwarding to
+`portal-api`. The SPA makes ordinary HTTP requests — no token library needed.
+
+**Roles**: `SWITCH_ADMIN`, `SWITCH_OPS`, `BANK_ADMIN`, `BANK_OPERATOR`, `BANK_VIEWER`.
+`BANK_*` roles are scoped to their own participant; the server enforces this
+via `X-Participant-Id` — frontend RBAC checks are UX only.
+
+**Portal API** (`cmd/portal-api`) is a Go BFF that reads from a separate
+CQRS read projection (Postgres) maintained by `portal-projector` (a Kafka
+consumer). It never queries the orchestrator's transactional database directly.
+
+The SPA uses **TanStack Query** with `refetchInterval` for live-feeling
+transaction views — no WebSocket.
+
+- Architecture & auth flow: [`frontend.md`](frontend.md)
+- OpenAPI spec: [`api/openapi/portal.yaml`](api/openapi/portal.yaml)
+- Authentik blueprint: [`deploy/authentik/portal-blueprint.yaml`](deploy/authentik/portal-blueprint.yaml)
 
 ---
 
@@ -330,38 +449,49 @@ make proto
 ## Project Layout
 
 ```
-├── api/               OpenAPI spec + protobuf definitions + generated stubs
-├── cmd/               Service entrypoints (8 binaries)
-├── deploy/            Dockerfile + Kubernetes manifests (kustomize)
-├── internal/          Hexagonal architecture
-│   ├── gateway/           REST HTTP handler
-│   ├── orchestrator/      Saga engine, steps, sweeper, sqlc repo
-│   ├── compliance/        Screening service + gRPC adapter
-│   ├── lookup/            BIC resolution + gRPC adapter
-│   ├── settlement/        Net settlement engine + gRPC adapter
-│   ├── quoting/           Quote generation + gRPC adapter
-│   ├── notification/      Notification dispatch + gRPC adapter
-│   ├── audit/             Kafka event consumer
-│   ├── participant/       Registry for participants/certificates
-│   ├── certificate/       Certificate-based registration
-│   ├── reconciliation/    Stub
-│   └── routing/           Stub
-├── migrations/        SQL + CQL schemas
-├── pkg/               Shared libraries
-│   ├── cache/         Redis client
-│   ├── config/        Environment config (viper)
-│   ├── crypto/        ISO20022 signature verification + replay protection
-│   ├── eventbus/      Kafka producer/consumer
-│   ├── iso20022/      XML structs for pacs.008 / pacs.002
-│   ├── ledger/        ScyllaDB audit store
-│   ├── metrics/       Prometheus instrumentation
-│   ├── middleware/    HTTP middleware (idempotency, mTLS)
-│   ├── outbox/        Transactional outbox writer + relay
-│   ├── resilience/    Circuit breaker + retry
-│   └── telemetry/     OpenTelemetry tracing + structured logging
+├── api/
+│   ├── openapi/
+│   │   ├── gateway.yaml       Payment gateway REST API (ISO 20022, bank systems)
+│   │   └── portal.yaml        Participant Portal BFF API (human operators)
+│   └── proto/                 Protobuf definitions + generated gRPC stubs
+├── cmd/                       Service entrypoints (one main.go per binary)
+├── deploy/
+│   ├── authentik/             Authentik blueprint YAML (portal auth config)
+│   ├── docker/                Docker Compose + Dockerfiles
+│   └── k8s/                   Kubernetes manifests (kustomize)
+├── frontend.md                Portal frontend & auth architecture
+├── internal/
+│   ├── gateway/               REST/ISO 20022 HTTP handler + content negotiation
+│   ├── orchestrator/          Saga engine, steps, sweeper, sqlc repo
+│   ├── compliance/            Screening service + gRPC adapter
+│   ├── lookup/                BIC resolution + gRPC adapter
+│   ├── settlement/            Net settlement engine + gRPC adapter
+│   ├── quoting/               Quote generation + gRPC adapter
+│   ├── notification/          Notification dispatch + gRPC adapter
+│   ├── reconciliation/        Payment record matching + gRPC adapter
+│   ├── routing/               Route + fee lookup + gRPC adapter
+│   ├── audit/                 Kafka event consumer
+│   ├── participant/           Registry for participants/certificates
+│   └── certificate/           Certificate-based registration
+├── migrations/                SQL + CQL schemas
+│   └── postgres/
+│       ├── 0001_init.sql      Core payment schema
+│       └── 0002_iso20022.sql  ISO 20022 enrichment columns
+├── pkg/
+│   ├── cache/                 Redis client
+│   ├── config/                Environment config (viper)
+│   ├── crypto/                ISO 20022 signature verification + replay protection
+│   ├── eventbus/              Kafka producer/consumer
+│   ├── iso20022/              pacs.008 / pacs.002 XML structs + domain helpers
+│   ├── ledger/                ScyllaDB audit store
+│   ├── metrics/               Prometheus instrumentation
+│   ├── middleware/            HTTP middleware (idempotency, mTLS participant resolver)
+│   ├── outbox/                Transactional outbox writer + relay
+│   ├── resilience/            Circuit breaker + retry
+│   └── telemetry/             OpenTelemetry tracing + structured logging
 └── test/
-    ├── integration/   Docker-backed integration tests
-    └── load/          k6 load test scripts
+    ├── integration/           Docker-backed integration tests (Testcontainers)
+    └── load/                  k6 load test scripts
 ```
 
 ---
@@ -421,30 +551,39 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 - **Transactional outbox** for reliable event publishing (no dual-write)
 - **`FOR UPDATE SKIP LOCKED`** for sweeper and outbox relay concurrency
 - **sqlc** for type-safe Postgres queries (no hand-written ORM)
-- **mTLS** for gateway authentication via client certificate thumbprints
+- **mTLS** terminated at Kong API Gateway — client certificate subject DN is
+  injected as `X-Participant-Id` header; the gateway parses `CN=` to resolve
+  the participant identity.
 - **Synchronous saga execution**: `POST /payments` blocks until
   `COMMITTED`/`ABORTED` rather than returning `202 Accepted` and making the
-  client poll. Chosen for simplicity in v1. Revisit if/when `quoting-service`
-  or `notification-service` get wired into the critical path — an extra
-  network hop or two inside a synchronous HTTP request is a different
-  latency budget than today's 4-step saga.
+  client poll. Chosen for simplicity in v1. With 10 steps now in the critical
+  path, each remote gRPC call adds to latency — revisit if average response
+  time exceeds the target SLA.
 
 ---
 
 ## Known Limitations / Roadmap
 
-- `internal/reconciliation` and `internal/routing` are stubs with no logic.
-- `quoting-service` and `notification-service` run as real gRPC services
-  but aren't called anywhere in the current saga — either wire them in as
-  additional steps (`QuoteStep`, `NotifyStep`) or be explicit in docs/specs
-  that they're not yet part of the payment lifecycle.
-- The synchronous saga model means a slow downstream gRPC call (e.g.
-  compliance) adds directly to `POST /payments` latency. Fine at current
-  scale; reconsider if average screening latency grows or more steps are
-  added to the path.
-- No documented account-lookup or routing endpoint yet — `source_bic`/
-  `destination_bic` are supplied directly by the caller rather than
-  resolved by the switch, even though `lookup-service` exists.
+- **Kong rate-limiting**: a basic `rate-limiting` plugin is configured with
+  200 requests/minute per client IP. No Redis-backed distributed rate
+  limiting or per-participant quotas are set up yet.
+- **Kong mTLS CA management**: client CA rotation and revocation are manual
+  (no OCSP stapling or CRL distribution).
+- **Circuit breaker / retry**: gRPC client calls in saga steps have no
+  resilience wrapping today. `pkg/resilience` exists but is not wired into
+  any caller. A downstream service outage blocks the entire saga step.
+- **Reconciliation auto-match**: `RecordReconciliationStep` records each
+  payment, but no automated background reconciliation job compares records
+  against external statements yet.
+- **Routing data / admin API**: Routes are seeded with defaults and loaded
+  at startup. There is no admin API to manage routes dynamically or persist
+  them to a database.
+- **Synchronous saga latency**: With 10 steps on the critical path, slow
+  gRPC calls compound. Consider making notification and reconciliation
+  steps async (fire-and-forget with retry) to keep `POST /payments` fast.
+- **No account-lookup or routing endpoint** — `source_bic`/`destination_bic`
+  are supplied directly by the caller rather than resolved by the switch,
+  even though `lookup-service` and `routing-service` exist.
 
 ---
 

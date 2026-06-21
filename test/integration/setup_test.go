@@ -92,12 +92,18 @@ func startContainers(ctx context.Context) (*testEnv, error) {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
 
-	schema, err := os.ReadFile("../../migrations/postgres/0001_init.sql")
-	if err != nil {
-		return nil, fmt.Errorf("read schema: %w", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		return nil, fmt.Errorf("apply schema: %w", err)
+	for _, migration := range []string{
+		"../../migrations/postgres/0001_init.sql",
+		"../../migrations/postgres/0002_iso20022.sql",
+		"../../migrations/postgres/0005_route_fields.sql",
+	} {
+		sql, err := os.ReadFile(migration)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", migration, err)
+		}
+		if _, err := pool.Exec(ctx, string(sql)); err != nil {
+			return nil, fmt.Errorf("apply %s: %w", migration, err)
+		}
 	}
 
 	kafkaHostPort := "19092"

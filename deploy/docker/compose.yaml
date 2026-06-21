@@ -1,5 +1,57 @@
 services:
 
+  # ---------------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------------
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.5
+    restart: on-failure
+    environment:
+      CLICKHOUSE_DB: uptrace
+      CLICKHOUSE_USER: uptrace
+      CLICKHOUSE_PASSWORD: uptrace
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  uptrace:
+    image: uptrace/uptrace:latest
+    ports:
+      - "14318:14318"  # UI / OTLP HTTP
+    volumes:
+      - ../uptrace/uptrace.yml:/etc/uptrace/config.yml:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:14318/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ../otelcol/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      uptrace: { condition: service_healthy }
+    restart: on-failure
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -47,6 +99,151 @@ services:
       timeout: 5s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # One-shot init services
+  # ---------------------------------------------------------------------------
+
+  # Generates a dev CA, server cert, and bank-a client cert into the named
+  # volume 'certs'. Kong and any mTLS test client use that volume.
+  # Skips generation if ca-cert.pem already exists (idempotent restarts).
+  certgen:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: certgen
+    working_dir: /certs
+    entrypoint: ["sh", "-c", "[ -f ca-cert.pem ] || /service"]
+    volumes:
+      - certs:/certs
+    restart: "no"
+
+  # Applies all SQL migrations in order. Services that need the schema depend
+  # on this with condition: service_completed_successfully.
+  migrate:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: switch
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -U switch; do sleep 1; done
+        psql -h postgres -U switch -d switch -f /schema/0001_init.sql
+        psql -h postgres -U switch -d switch -f /schema/0002_iso20022.sql
+        psql -h postgres -U switch -d switch -f /schema/0003_portal.sql
+        psql -h postgres -U switch -d switch -f /schema/0004_seed.sql
+        psql -h postgres -U switch -d switch -f /schema/0005_route_fields.sql
+        psql -h postgres -U switch -d switch -f /schema/0006_bank_api_config.sql
+        psql -h postgres -U switch -d switch -f /schema/0007_bank_api_seed.sql
+        psql -h postgres -U switch -d switch -f /schema/0008_callback_url.sql
+        psql -h postgres -U switch -d switch -f /schema/0009_bank_api_urls.sql
+        psql -h postgres -U switch -d switch -f /schema/0010_sync_payments_trigger.sql
+    volumes:
+      - ../../migrations/postgres/0001_init.sql:/schema/0001_init.sql:ro
+      - ../../migrations/postgres/0002_iso20022.sql:/schema/0002_iso20022.sql:ro
+      - ../../migrations/postgres/0003_portal.sql:/schema/0003_portal.sql:ro
+      - ../../migrations/postgres/0004_seed.sql:/schema/0004_seed.sql:ro
+      - ../../migrations/postgres/0005_route_fields.sql:/schema/0005_route_fields.sql:ro
+      - ../../migrations/postgres/0006_bank_api_config.sql:/schema/0006_bank_api_config.sql:ro
+      - ../../migrations/postgres/0007_bank_api_seed.sql:/schema/0007_bank_api_seed.sql:ro
+      - ../../migrations/postgres/0008_callback_url.sql:/schema/0008_callback_url.sql:ro
+      - ../../migrations/postgres/0009_bank_api_urls.sql:/schema/0009_bank_api_urls.sql:ro
+      - ../../migrations/postgres/0010_sync_payments_trigger.sql:/schema/0010_sync_payments_trigger.sql:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Identity Provider (Simple Auth Service in Go)
+  # ---------------------------------------------------------------------------
+
+  auth-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: auth-service
+    ports:
+      - "9009:9000"
+    depends_on:
+      certgen: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/login"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # API gateway (Kong + payment-switch gateway)
+  # ---------------------------------------------------------------------------
+
+  kong-migrations:
+    image: kong:3.8
+    environment:
+      KONG_PG_HOST: postgres
+      KONG_PG_USER: switch
+      KONG_PG_PASSWORD: switch
+      KONG_PG_DATABASE: switch
+    depends_on:
+      postgres: { condition: service_healthy }
+      certgen: { condition: service_completed_successfully }
+    command: ["kong", "migrations", "bootstrap"]
+    restart: "no"
+
+  kong:
+    image: kong:3.8
+    ports:
+      - "8443:8443"   # HTTPS + mTLS — bank payment API
+      - "8000:8000"   # HTTP — portal API forward-auth
+      - "8001:8001"   # Kong Admin API
+      - "8002:8002"   # Kong Manager Admin GUI
+    environment:
+      KONG_DATABASE: "postgres"
+      KONG_PG_HOST: postgres
+      KONG_PG_USER: switch
+      KONG_PG_PASSWORD: switch
+      KONG_PG_DATABASE: switch
+      KONG_PLUGINS: "bundled,forward-auth,opentelemetry"
+      KONG_PROXY_LISTEN: "0.0.0.0:8443 http2 ssl, 0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_ADMIN_GUI_LISTEN: "0.0.0.0:8002"
+      KONG_ADMIN_GUI_URL: "http://localhost:8002"
+      # OpenTelemetry tracing — spans exported to Uptrace
+      KONG_TRACING_INSTRUMENTATIONS: "all"
+      KONG_TRACING_SAMPLING_RATE: "1"
+      # Server TLS — cert presented to connecting clients
+      KONG_SSL_CERT: /certs/server-cert.pem
+      KONG_SSL_CERT_KEY: /certs/server-key.pem
+      # mTLS — require and verify client certificates via NGINX directive injection
+      KONG_NGINX_PROXY_SSL_CLIENT_CERTIFICATE: /certs/ca-cert.pem
+      KONG_NGINX_PROXY_SSL_VERIFY_CLIENT: "optional"
+      KONG_NGINX_PROXY_SSL_VERIFY_DEPTH: "2"
+      KONG_LOG_LEVEL: notice
+    volumes:
+      - ../kong/plugins/forward-auth:/usr/local/share/lua/5.1/kong/plugins/forward-auth:ro
+      - certs:/certs:ro
+    depends_on:
+      kong-migrations: { condition: service_completed_successfully }
+      gateway: { condition: service_healthy }
+      auth-service: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Seeds Kong services, routes, and the global OpenTelemetry plugin
+  # via Admin API after Kong is healthy. Restart:no so it runs once.
+  kong-seed:
+    image: alpine:latest
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache curl bash >/dev/null 2>&1 && bash /etc/kong/setup.sh"]
+    volumes:
+      - ../kong/setup.sh:/etc/kong/setup.sh:ro
+    depends_on:
+      kong: { condition: service_healthy }
+    restart: "no"
+
   gateway:
     build:
       context: ../..
@@ -54,8 +251,7 @@ services:
       args:
         SERVICE: gateway
     ports:
-      - "8080:8080"
-      - "9095:9095"
+      - "9095:9095"   # metrics only; internal HTTP :8080 is reached via Kong
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9095"
@@ -65,10 +261,27 @@ services:
       COMPLIANCE_ADDR: "compliance-service:9090"
       LOOKUP_ADDR: "lookup-service:9090"
       SETTLEMENT_ADDR: "settlement-service:9090"
+      QUOTING_ADDR: "quoting-service:9090"
+      NOTIFICATION_ADDR: "notification-service:9090"
+      ROUTING_ADDR: "routing-service:9090"
+      RECONCILIATION_ADDR: "reconciliation-service:9090"
+      BANK_API_ENABLED: "true"
+      OTLP_ENDPOINT: "otelcol:4317"
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redpanda: { condition: service_healthy }
       redis: { condition: service_healthy }
+      otelcol: { condition: service_started }
+      bank-service: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Domain services
+  # ---------------------------------------------------------------------------
 
   compliance-service:
     build:
@@ -77,11 +290,13 @@ services:
       args:
         SERVICE: compliance-service
     ports:
-      - "9091:9090"
-      - "9096:9095"
+      - "9096:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    depends_on:
+      otelcol: { condition: service_started }
 
   lookup-service:
     build:
@@ -90,14 +305,15 @@ services:
       args:
         SERVICE: lookup-service
     ports:
-      - "9092:9090"
-      - "9097:9095"
+      - "9097:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
       REDIS_ADDR: "redis:6379"
+      OTLP_ENDPOINT: "otelcol:4317"
     depends_on:
       redis: { condition: service_healthy }
+      otelcol: { condition: service_started }
 
   settlement-service:
     build:
@@ -106,11 +322,13 @@ services:
       args:
         SERVICE: settlement-service
     ports:
-      - "9093:9090"
-      - "9098:9095"
+      - "9098:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    depends_on:
+      otelcol: { condition: service_started }
 
   quoting-service:
     build:
@@ -119,11 +337,13 @@ services:
       args:
         SERVICE: quoting-service
     ports:
-      - "9094:9090"
-      - "9099:9095"
+      - "9099:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    depends_on:
+      otelcol: { condition: service_started }
 
   notification-service:
     build:
@@ -132,11 +352,43 @@ services:
       args:
         SERVICE: notification-service
     ports:
-      - "9100:9090"
-      - "9101:9095"
+      - "9100:9095"   # metrics
     environment:
       GRPC_ADDR: ":9090"
       METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    depends_on:
+      otelcol: { condition: service_started }
+
+  routing-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: routing-service
+    ports:
+      - "9101:9095"   # metrics
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    depends_on:
+      otelcol: { condition: service_started }
+
+  reconciliation-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: reconciliation-service
+    ports:
+      - "9102:9095"   # metrics
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    depends_on:
+      otelcol: { condition: service_started }
 
   audit-service:
     build:
@@ -149,15 +401,70 @@ services:
     depends_on:
       redpanda: { condition: service_healthy }
 
-  migrate:
-    image: postgres:16-alpine
-    command:
-      - sh
-      - -c
-      - "until pg_isready -h postgres -U switch; do sleep 1; done && psql '$$POSTGRES_DSN' -f /schema/0001_init.sql"
+  # ---------------------------------------------------------------------------
+  # Mock Bank Service (HTTP, port 8081)
+  # Mimics real bank backends with JSON (reserve/credit/release) and ISO 20022
+  # XML (camt.003 account lookup, pacs.008→pacs.002) endpoints.
+  # The gateway's BankClient calls into this when BANK_API_ENABLED=true.
+  # ---------------------------------------------------------------------------
+  bank-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: bank-service
+    ports:
+      - "8081:8081"
     environment:
+      BANK_ADDR: ":8081"
+
+  # ---------------------------------------------------------------------------
+  # Participant Portal API
+  # ---------------------------------------------------------------------------
+  # In production, traffic reaches this service through Kong → Authentik
+  # forward-auth. Authentik validates the session and injects identity headers
+  # (X-authentik-uid, X-authentik-username, X-authentik-groups, X-User-Role,
+  # X-Participant-Id). Kong proxies portal requests on port 8000.
+  #
+  # Access the portal via:  http://localhost:8000/portal/
+  # Direct API (dev only):  http://localhost:8090/api/v1/me
+  portal-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SERVICE: portal-api
+    ports:
+      - "8090:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9095"
       POSTGRES_DSN: "postgres://switch:switch@postgres:5432/switch?sslmode=disable"
-    volumes:
-      - ../../migrations/postgres/0001_init.sql:/schema/0001_init.sql
+      OTLP_ENDPOINT: "otelcol:4317"
+      PORTAL_STATIC_DIR: "/portal/dist"
+      # Fixed dev CSRF secret so tokens survive container restarts.
+      # In production, replace with: openssl rand -hex 32
+      CSRF_SECRET: "cafecafe00000000000000000000000000000000000000000000000000000000"
+      # Set to the SPA origin if the frontend runs on a different port/host, e.g.:
+      # PORTAL_ORIGIN: "http://localhost:5173"
+      PORTAL_ORIGIN: ""
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      otelcol: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+
+volumes:
+  # Holds the generated dev CA + server/client TLS certificates.
+  # Kong reads from this volume; copy client certs out with:
+  #   docker compose cp certgen:/certs/client-bank-a-cert.pem .
+  #   docker compose cp certgen:/certs/client-bank-a-key.pem .
+  certs:
+  clickhouse_data:

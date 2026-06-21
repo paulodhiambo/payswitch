@@ -6,6 +6,29 @@ import (
 	reconciliationpb "switch/api/proto/reconciliation"
 )
 
+type GRPCClient struct {
+	client reconciliationpb.ReconciliationClient
+}
+
+func NewGRPCClient(client reconciliationpb.ReconciliationClient) *GRPCClient {
+	return &GRPCClient{client: client}
+}
+
+// AddRecord satisfies ports.ReconciliationClient.
+func (c *GRPCClient) AddRecord(ctx context.Context, paymentID, sourceBIC, destBIC string, amount int64, currency, status string) error {
+	_, err := c.client.AddRecord(ctx, &reconciliationpb.AddRecordRequest{
+		Record: &reconciliationpb.Record{
+			PaymentId: paymentID,
+			SourceBic: sourceBIC,
+			DestBic:   destBIC,
+			Amount:    amount,
+			Currency:  currency,
+			Status:    status,
+		},
+	})
+	return err
+}
+
 type GRPCServer struct {
 	reconciliationpb.UnimplementedReconciliationServer
 	svc *Service
@@ -17,7 +40,7 @@ func NewGRPCServer(svc *Service) *GRPCServer {
 
 func (s *GRPCServer) AddRecord(ctx context.Context, req *reconciliationpb.AddRecordRequest) (*reconciliationpb.AddRecordResponse, error) {
 	r := req.GetRecord()
-	s.svc.AddRecord(Record{
+	s.svc.Insert(Record{
 		PaymentID:   r.GetPaymentId(),
 		SourceBIC:   r.GetSourceBic(),
 		DestBIC:     r.GetDestBic(),

@@ -1,15 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.14">
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10 pacs.002.001.10.xsd">
   <FIToFIPmtStsRpt>
     <GrpHdr>
       <MsgId>STATUS-20250620-001</MsgId>
-      <CreDtTm>2025-06-20T10:31:00Z</CreDtTm>
-      <NbOfTxs>1</NbOfTxs>
-      <TtlIntrBkSttlmAmt Ccy="USD">500.00</TtlIntrBkSttlmAmt>
-      <IntrBkSttlmDt>2025-06-20</IntrBkSttlmDt>
-      <SttlmInf>
-        <SttlmMtd>CLRG</SttlmMtd>
-      </SttlmInf>
+      <CreDtTm>2025-06-20T10:30:05Z</CreDtTm>
     </GrpHdr>
     <TxInfAndSts>
       <OrgnlInstrId>INSTR-001</OrgnlInstrId>

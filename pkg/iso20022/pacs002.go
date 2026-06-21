@@ -2,35 +2,41 @@ package iso20022
 
 import "encoding/xml"
 
-// DocumentPacs002 is the root element of a pacs.002 Status Report message.
+const NamespacePacs002 = "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"
+
 type DocumentPacs002 struct {
 	XMLName            xml.Name           `xml:"Document"`
+	XMLNS              string             `xml:"xmlns,attr,omitempty"`
 	FIToFIPmtStsRpt FIToFIPaymentStatusReport `xml:"FIToFIPmtStsRpt"`
 }
 
 type FIToFIPaymentStatusReport struct {
-	GrpHdr      GroupHeader          `xml:"GrpHdr"`
+	GrpHdr      Pacs002GroupHeader `xml:"GrpHdr"`
 	TxInfAndSts []TransactionStatus `xml:"TxInfAndSts"`
 }
 
+type Pacs002GroupHeader struct {
+	MsgID   string `xml:"MsgId"`
+	CreDtTm string `xml:"CreDtTm"`
+}
+
 type TransactionStatus struct {
-	OrgnlInstrID string `xml:"OrgnlInstrId"`
-	OrgnlEndToEndID string `xml:"OrgnlEndToEndId"`
-	OrgnlTxID    string `xml:"OrgnlTxId"`
-	TxSts        string `xml:"TxSts"`
-	StsRsnInf    *StatusReason `xml:"StsRsnInf,omitempty"`
+	OrgnlInstrID    string       `xml:"OrgnlInstrId"`
+	OrgnlEndToEndID string       `xml:"OrgnlEndToEndId"`
+	OrgnlTxID       string       `xml:"OrgnlTxId"`
+	TxSts           string       `xml:"TxSts"`
+	StsRsnInf       *StatusReason `xml:"StsRsnInf,omitempty"`
 }
 
 type StatusReason struct {
-	Rsn  StatusReasonCode `xml:"Rsn"`
-	AddtlInf string       `xml:"AddtlInf"`
+	Rsn      StatusReasonCode `xml:"Rsn"`
+	AddtlInf string           `xml:"AddtlInf"`
 }
 
 type StatusReasonCode struct {
 	Cd string `xml:"Cd"`
 }
 
-// Constants for common status codes.
 const (
 	StatusAccepted           = "ACCP"
 	StatusAcceptedSettlement = "ACSC"
@@ -39,9 +45,9 @@ const (
 	StatusReceived           = "RCVD"
 )
 
-// Constants for reason codes.
 const (
 	ReasonNoInstruction = "NARR"
 	ReasonCutOffTime    = "CUTA"
 	ReasonInvalidAmount = "AM09"
+	ReasonNotFound      = "N404"
 )

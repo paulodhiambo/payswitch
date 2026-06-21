@@ -74,3 +74,25 @@ func (r *Registry) GetBankForParticipant(ctx context.Context, id string) (bic, a
 	}
 	return p.BIC, p.Account, nil
 }
+
+func (r *Registry) LookupAccount(ctx context.Context, account string) (bic string, bankName string, err error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.byID {
+		if p.Account == account {
+			return p.BIC, p.Name, nil
+		}
+	}
+	return "", "", fmt.Errorf("account %s not found", account)
+}
+
+func (r *Registry) LookupBIC(ctx context.Context, bic string) (account string, bankName string, err error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.byID {
+		if p.BIC == bic {
+			return p.Account, p.Name, nil
+		}
+	}
+	return "", "", fmt.Errorf("BIC %s not found", bic)
+}

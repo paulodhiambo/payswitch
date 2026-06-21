@@ -1,0 +1,75 @@
+service:
+  env: development
+  secret: "change-me-to-a-random-string-1234567"
+
+site:
+  url: http://localhost:14318
+
+listen:
+  http:
+    addr: :14318
+  grpc:
+    addr: :14317
+
+pg:
+  addr: postgres:5432
+  user: switch
+  password: switch
+  database: switch
+
+ch_cluster:
+  cluster: uptrace1
+  replicated: false
+  distributed: false
+  shards:
+    - replicas:
+        - addr: clickhouse:9000
+          database: uptrace
+          user: uptrace
+          password: uptrace
+
+redis_cache:
+  addrs:
+    1: redis:6379
+
+seed_data:
+  update: true
+  delete: true
+
+  users:
+    - key: user1
+      name: Admin
+      email: admin@switch.local
+      password: switchadmin
+      email_confirmed: true
+
+  user_tokens:
+    - key: user_token1
+      user_key: user1
+      token: switchadmin_token
+
+  orgs:
+    - key: org1
+      name: SwitchOrg
+
+  org_users:
+    - key: org_user1
+      org_key: org1
+      user_key: user1
+      role: owner
+
+  projects:
+    - key: project1
+      name: Default Project
+      org_key: org1
+
+  project_tokens:
+    - key: project_token1
+      project_key: project1
+      token: token123
+
+  project_users:
+    - key: project_user1
+      project_key: project1
+      org_user_key: org_user1
+      perm_level: admin

@@ -1,7 +1,10 @@
 -- name: CreatePayment :one
 INSERT INTO payment (id, end_to_end_id, source_bic, destination_bic,
-                     source_account, dest_account, amount, currency, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     source_account, dest_account, amount, currency, status,
+                     uetr, instr_id, charge_bearer, sttlm_dt,
+                     debtor_name, creditor_name, purpose_code, remittance_info,
+                     route_fee, route_estimated_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 RETURNING *;
 
 -- name: UpdatePaymentStatus :exec
@@ -21,6 +24,11 @@ SELECT * FROM payment WHERE id = $1;
 
 -- name: GetPaymentByEndToEndID :one
 SELECT * FROM payment WHERE end_to_end_id = $1;
+
+-- name: UpdatePaymentRoute :exec
+UPDATE payment
+SET route_fee = $1, route_estimated_ms = $2, status = $3, updated_at = now()
+WHERE id = $4;
 
 -- name: FindExpiredReservations :many
 SELECT id, source_account, amount, reserved_at, expires_at

@@ -9,18 +9,28 @@ import (
 )
 
 type Payment struct {
-	ID             string
-	EndToEndID     string
-	SourceBic      string
-	DestinationBic string
-	SourceAccount  string
-	DestAccount    string
-	Amount         int64
-	Currency       string
-	Status         string
-	QuoteID        pgtype.Text
-	ReservedAt     pgtype.Timestamptz
-	ExpiresAt      pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
+	ID               string
+	EndToEndID       string
+	SourceBic        string
+	DestinationBic   string
+	SourceAccount    string
+	DestAccount      string
+	Amount           int64
+	Currency         string
+	Status           string
+	QuoteID          pgtype.Text
+	RouteFee         pgtype.Int8
+	RouteEstimatedMs pgtype.Int4
+	ReservedAt       pgtype.Timestamptz
+	ExpiresAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	Uetr             pgtype.Text
+	InstrID          pgtype.Text
+	ChargeBearer     pgtype.Text
+	SttlmDt          pgtype.Date
+	DebtorName       pgtype.Text
+	CreditorName     pgtype.Text
+	PurposeCode      pgtype.Text
+	RemittanceInfo   pgtype.Text
 }

@@ -25,10 +25,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("routing-service")
+	logger, lp, err := telemetry.InitLogger(ctx, cfg.OTLPEndpoint, "routing-service")
+	if err != nil {
+		slog.Error("init logger", "error", err)
+		os.Exit(1)
+	}
+	if lp != nil {
+		defer lp.Shutdown(ctx)
+	}
+
+	if cfg.OTLPEndpoint != "" {
+		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "routing-service")
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+		} else {
+			defer tp.Shutdown(ctx)
+		}
+	}
 
 	metrics.Listen(cfg.MetricsAddr)
 

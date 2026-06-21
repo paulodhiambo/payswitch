@@ -10,7 +10,7 @@ import (
 
 func TestService_MatchSuccess(t *testing.T) {
 	svc := reconciliation.New()
-	svc.AddRecord(reconciliation.Record{
+	svc.Insert(reconciliation.Record{
 		PaymentID: "pay-1", Status: "COMMITTED",
 	})
 
@@ -20,7 +20,7 @@ func TestService_MatchSuccess(t *testing.T) {
 
 func TestService_MatchFailure(t *testing.T) {
 	svc := reconciliation.New()
-	svc.AddRecord(reconciliation.Record{
+	svc.Insert(reconciliation.Record{
 		PaymentID: "pay-1", Status: "ABORTED",
 	})
 
@@ -36,8 +36,8 @@ func TestService_MatchNotFound(t *testing.T) {
 
 func TestService_Report(t *testing.T) {
 	svc := reconciliation.New()
-	svc.AddRecord(reconciliation.Record{PaymentID: "pay-1", Status: "COMMITTED", Matched: true})
-	svc.AddRecord(reconciliation.Record{PaymentID: "pay-2", Status: "ABORTED", Matched: false})
+	svc.Insert(reconciliation.Record{PaymentID: "pay-1", Status: "COMMITTED", Matched: true})
+	svc.Insert(reconciliation.Record{PaymentID: "pay-2", Status: "ABORTED", Matched: false})
 
 	report := svc.Report()
 	require.Len(t, report, 2)

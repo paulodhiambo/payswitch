@@ -40,7 +40,9 @@ spec:
           command:
             - sh
             - -c
-            - psql "$POSTGRES_DSN" -f /schema/0001_init.sql
+            - |
+              psql "$POSTGRES_DSN" -f /schema/0001_init.sql
+              psql "$POSTGRES_DSN" -f /schema/0002_iso20022.sql
           envFrom:
             - configMapRef:
                 name: payment-switch-config

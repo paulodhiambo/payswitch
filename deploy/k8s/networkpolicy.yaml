@@ -25,6 +25,44 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: allow-portal-api-ingress
+  namespace: payment-switch
+spec:
+  podSelector:
+    matchLabels:
+      app: portal-api
+  ingress:
+    # Allow the Authentik outpost (deployed in its own namespace) to reach the
+    # portal-api. Adjust namespaceSelector to match your Authentik namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: authentik
+      ports:
+        - port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-portal-api-egress-postgres
+  namespace: payment-switch
+spec:
+  podSelector:
+    matchLabels:
+      app: portal-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: allow-postgres-access
   namespace: payment-switch
 spec:
@@ -36,5 +74,8 @@ spec:
         - podSelector:
             matchLabels:
               app: gateway
+        - podSelector:
+            matchLabels:
+              app: portal-api
       ports:
         - port: 5432

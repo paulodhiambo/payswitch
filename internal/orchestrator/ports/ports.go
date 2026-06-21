@@ -9,11 +9,13 @@ import (
 
 type PaymentRepository interface {
 	Create(ctx context.Context, p *domain.Payment) error
+	CreateWithEvent(ctx context.Context, p *domain.Payment) error
 	UpdateStatus(ctx context.Context, id string, status domain.PaymentStatus) error
 	GetByID(ctx context.Context, id string) (*domain.Payment, error)
 	GetByEndToEndID(ctx context.Context, e2eID string) (*domain.Payment, error)
 	FindExpiredReservations(ctx context.Context, before time.Time) ([]domain.Reservation, error)
 	MarkReserved(ctx context.Context, id string, ttl time.Duration) error
+	UpdateRoute(ctx context.Context, id string, fee int64, estimatedMs int) error
 }
 
 type BankClient interface {
@@ -32,15 +34,23 @@ type LookupClient interface {
 }
 
 type QuotingClient interface {
-	GetQuoteClient(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (quoteID string, fee int64, total int64, err error)
+	GetQuote(ctx context.Context, sourceBIC, destBIC string, amount int64, currency string) (quoteID string, fee int64, total int64, err error)
 }
 
 type NotificationClient interface {
-	NotifyClient(ctx context.Context, participantID, channel, title, body, paymentID, status string) error
+	Notify(ctx context.Context, participantID, channel, title, body, paymentID, status string) error
 }
 
 type SettlementClient interface {
 	Submit(ctx context.Context, p *domain.Payment) error
+}
+
+type ReconciliationClient interface {
+	AddRecord(ctx context.Context, paymentID, sourceBIC, destBIC string, amount int64, currency, status string) error
+}
+
+type RoutingClient interface {
+	FindRoute(ctx context.Context, sourceBIC, destBIC, currency string) (fee int64, estimatedMs int, err error)
 }
 
 type OutboxWriter interface {
