@@ -29,14 +29,15 @@ accessLog:
   format: json
 
 providers:
-  # ── Docker Swarm provider ──────────────────────────────────────────────────
-  # Discovers services via deploy.labels in stack.yaml.
-  # 'network' must match the full overlay network name: {stack_name}_{net_name}
-  docker:
-    swarmMode: true
+  # ── Docker Swarm provider (Traefik v3 syntax) ──────────────────────────────
+  # In Traefik v3, Swarm mode is configured under `providers.swarm`,
+  # NOT `providers.docker` with `swarmMode: true` (that was v2 syntax).
+  swarm:
+    endpoint: "unix:///var/run/docker.sock"
     network: payswitch_net
     exposedByDefault: false
     watch: true
+    refreshSeconds: 15
   # ── File provider ──────────────────────────────────────────────────────────
   # Handles: TLS certificates + options (mTLS), all middleware definitions,
   # and the dashboard router (which can't be a service label because it targets
