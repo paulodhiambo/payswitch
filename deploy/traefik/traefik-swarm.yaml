@@ -47,6 +47,8 @@ providers:
     watch: true
 
 tracing:
-  openTelemetry:
-    address: "otelcol:4317"
-    insecure: true
+  # Traefik v3: tracing.openTelemetry → tracing.otlp
+  otlp:
+    grpc:
+      endpoint: "otelcol:4317"
+      insecure: true
