@@ -1,0 +1,380 @@
+version: "3.9"
+# ============================================================================
+# PaySwitch — Docker Swarm Stack (single node)
+#
+# Deploy:
+#   export GHCR_REPO=ghcr.io/<owner>/<repo>
+#   export IMAGE_TAG=<git-sha>
+#   export CSRF_SECRET=<hex-64-chars>
+#   bash deploy/docker/pre-deploy.sh
+#
+# The pre-deploy script runs certgen, migrations, creates Docker secrets,
+# and calls `docker stack deploy` with these env vars.
+# ============================================================================
+
+networks:
+  net:
+    driver: overlay
+    attachable: true   # needed so pre-deploy one-shot containers can join
+
+volumes:
+  certs:
+    driver: local
+  clickhouse_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+secrets:
+  # HTTP basic-auth credentials for the Traefik dashboard.
+  # Created by pre-deploy.sh from TRAEFIK_DASHBOARD_USER / TRAEFIK_DASHBOARD_PASSWORD.
+  dashboard_users:
+    external: true
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Traefik — reverse proxy, mTLS termination, dashboard
+  # ─────────────────────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.3
+    ports:
+      - target: 8000
+        published: 8000
+        mode: host          # host mode preserves real client IPs
+      - target: 8443
+        published: 8443
+        mode: host
+      - target: 8080
+        published: 8080
+        mode: host          # dashboard (basic-auth secured)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/payswitch/deploy/traefik/traefik-swarm.yaml:/etc/traefik/traefik.yaml:ro
+      - /opt/payswitch/deploy/traefik/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
+      - certs:/certs:ro
+    secrets:
+      - dashboard_users
+    networks:
+      - net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager   # must be on the manager to read the Docker socket
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Infrastructure
+  # ─────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: switch
+      POSTGRES_PASSWORD: switch
+      POSTGRES_DB: switch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.4
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "1"
+      - --overprovisioned
+      - --kafka-addr
+      - 0.0.0.0:9092
+      - --advertise-kafka-addr
+      - redpanda:9092
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Observability
+  # ─────────────────────────────────────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.5
+    environment:
+      CLICKHOUSE_DB: uptrace
+      CLICKHOUSE_USER: uptrace
+      CLICKHOUSE_PASSWORD: uptrace
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  uptrace:
+    image: uptrace/uptrace:latest
+    ports:
+      - target: 14318
+        published: 14318
+        mode: host
+    volumes:
+      - /opt/payswitch/deploy/uptrace/uptrace.yml:/etc/uptrace/config.yml:ro
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:14318/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - /opt/payswitch/deploy/otelcol/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Auth service
+  # ─────────────────────────────────────────────────────────────────────────
+  auth-service:
+    image: ${GHCR_REPO}/auth-service:${IMAGE_TAG:-latest}
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.auth.entrypoints=web"
+        - "traefik.http.routers.auth.rule=Path(`/login`) || Path(`/logout`)"
+        - "traefik.http.services.auth-service.loadbalancer.server.port=9000"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Payment gateway (HTTP :8080, metrics :9095 — internal only)
+  # ─────────────────────────────────────────────────────────────────────────
+  gateway:
+    image: ${GHCR_REPO}/gateway:${IMAGE_TAG:-latest}
+    environment:
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9095"
+      POSTGRES_DSN: "postgres://switch:switch@postgres:5432/switch?sslmode=disable"
+      KAFKA_BROKERS: "redpanda:9092"
+      REDIS_ADDR: "redis:6379"
+      COMPLIANCE_ADDR: "compliance-service:9090"
+      LOOKUP_ADDR: "lookup-service:9090"
+      SETTLEMENT_ADDR: "settlement-service:9090"
+      QUOTING_ADDR: "quoting-service:9090"
+      NOTIFICATION_ADDR: "notification-service:9090"
+      ROUTING_ADDR: "routing-service:9090"
+      RECONCILIATION_ADDR: "reconciliation-service:9090"
+      BANK_API_ENABLED: "true"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      labels:
+        - "traefik.enable=true"
+        # mTLS payment API
+        - "traefik.http.routers.payments.entrypoints=mtls"
+        - "traefik.http.routers.payments.rule=PathPrefix(`/payments`)"
+        - "traefik.http.routers.payments.tls=true"
+        - "traefik.http.routers.payments.middlewares=inject-participant-id@file,rate-limit-payments@file"
+        # Health check (no middleware)
+        - "traefik.http.routers.gateway-health.entrypoints=mtls"
+        - "traefik.http.routers.gateway-health.rule=Path(`/healthz`)"
+        - "traefik.http.routers.gateway-health.tls=true"
+        # Port hint for Traefik Swarm service discovery
+        - "traefik.http.services.gateway.loadbalancer.server.port=8080"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Domain services (gRPC :9090 — internal overlay only)
+  # ─────────────────────────────────────────────────────────────────────────
+  compliance-service:
+    image: ${GHCR_REPO}/compliance-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  lookup-service:
+    image: ${GHCR_REPO}/lookup-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      REDIS_ADDR: "redis:6379"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  settlement-service:
+    image: ${GHCR_REPO}/settlement-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  quoting-service:
+    image: ${GHCR_REPO}/quoting-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  notification-service:
+    image: ${GHCR_REPO}/notification-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  routing-service:
+    image: ${GHCR_REPO}/routing-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  reconciliation-service:
+    image: ${GHCR_REPO}/reconciliation-service:${IMAGE_TAG:-latest}
+    environment:
+      GRPC_ADDR: ":9090"
+      METRICS_ADDR: ":9095"
+      OTLP_ENDPOINT: "otelcol:4317"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  audit-service:
+    image: ${GHCR_REPO}/audit-service:${IMAGE_TAG:-latest}
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Portal API + SPA
+  # ─────────────────────────────────────────────────────────────────────────
+  portal-api:
+    image: ${GHCR_REPO}/portal-api:${IMAGE_TAG:-latest}
+    environment:
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9095"
+      POSTGRES_DSN: "postgres://switch:switch@postgres:5432/switch?sslmode=disable"
+      OTLP_ENDPOINT: "otelcol:4317"
+      PORTAL_STATIC_DIR: "/portal/dist"
+      PORTAL_ORIGIN: ""
+      # CSRF_SECRET is injected at deploy time from the VPS .env file.
+      # Generate with: openssl rand -hex 32
+      CSRF_SECRET: "${CSRF_SECRET}"
+    networks:
+      - net
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      labels:
+        - "traefik.enable=true"
+        # Portal REST API (auth-gated)
+        - "traefik.http.routers.portal-api.entrypoints=web"
+        - "traefik.http.routers.portal-api.rule=PathPrefix(`/portal/api`)"
+        - "traefik.http.routers.portal-api.middlewares=forward-auth@file,rate-limit-portal@file"
+        # Portal SPA (auth-gated)
+        - "traefik.http.routers.portal-spa.entrypoints=web"
+        - "traefik.http.routers.portal-spa.rule=PathPrefix(`/portal`)"
+        - "traefik.http.routers.portal-spa.middlewares=forward-auth@file"
+        # Port hint
+        - "traefik.http.services.portal-api.loadbalancer.server.port=8080"
