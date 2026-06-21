@@ -14,9 +14,16 @@
 #   VPS_GHCR_TOKEN             GitHub PAT with read:packages scope
 #   GITHUB_ACTOR               GitHub username (for GHCR login)
 #
-# Usage:
-#   source /opt/payswitch/.env
-#   bash /opt/payswitch/deploy/docker/pre-deploy.sh
+# Order of operations (critical — do NOT reorder):
+#   1. GHCR login
+#   2. Init Docker Swarm
+#   3. Create named volumes
+#   4. Run certgen (standalone container — only needs the certs volume)
+#   5. Create overlay network
+#   6. Create Docker secrets
+#   7. Deploy / update the stack  ← postgres starts HERE
+#   8. Wait for postgres to be healthy inside the running stack
+#   9. Run migrations (one-shot container on the overlay network)
 # =============================================================================
 
 set -euo pipefail
@@ -24,6 +31,7 @@ set -euo pipefail
 STACK_NAME="payswitch"
 DEPLOY_DIR="/opt/payswitch"
 MIGRATIONS_DIR="${DEPLOY_DIR}/migrations/postgres"
+POSTGRES_WAIT_TIMEOUT=120   # seconds to wait for postgres to become ready
 
 # ── Validate required vars ────────────────────────────────────────────────────
 : "${GHCR_REPO:?GHCR_REPO is required}"
@@ -59,8 +67,8 @@ for vol in certs postgres_data clickhouse_data; do
 done
 
 # ── 4. Generate TLS certificates (idempotent) ─────────────────────────────────
-# Writes ca-cert.pem, server-cert.pem, server-key.pem into the certs volume.
-# Skipped if ca-cert.pem already exists (allows cert rotation by removing the file).
+# Standalone docker run — only needs the certs volume, no network required.
+# Skipped if ca-cert.pem already exists (rotate by removing the file).
 echo "--> Running certgen..."
 docker run --rm \
   --mount "type=volume,src=${STACK_NAME}_certs,dst=/certs" \
@@ -69,6 +77,8 @@ docker run --rm \
   -c '[ -f /certs/ca-cert.pem ] && echo "Certs already present, skipping." || /service'
 
 # ── 5. Create overlay network (idempotent) ────────────────────────────────────
+# Must be created before stack deploy so Traefik and the migration container
+# can both join it. Docker Swarm will adopt it when the stack deploys.
 NETWORK_NAME="${STACK_NAME}_net"
 if ! docker network ls --format '{{.Name}}' | grep -q "^${NETWORK_NAME}$"; then
   echo "--> Creating overlay network ${NETWORK_NAME}..."
@@ -82,9 +92,7 @@ else
 fi
 
 # ── 6. Docker secret: dashboard_users ────────────────────────────────────────
-# htpasswd-format credentials for the Traefik dashboard basic-auth middleware.
-# Uses APR1 (MD5-based) — compatible with all Traefik versions.
-# To rotate: docker secret rm dashboard_users && re-run this script.
+# Must exist before stack deploy (Traefik reads it at startup).
 SECRET_NAME="dashboard_users"
 if ! docker secret ls --format '{{.Name}}' | grep -q "^${SECRET_NAME}$"; then
   echo "--> Creating Docker secret: ${SECRET_NAME}..."
@@ -94,11 +102,12 @@ if ! docker secret ls --format '{{.Name}}' | grep -q "^${SECRET_NAME}$"; then
   echo "    Dashboard user: ${TRAEFIK_DASHBOARD_USER}"
 else
   echo "--> Secret ${SECRET_NAME} already exists — skipping."
-  echo "    To rotate credentials: docker secret rm ${SECRET_NAME} && re-run."
+  echo "    To rotate: docker secret rm ${SECRET_NAME} && re-run."
 fi
 
-# ── 8. Deploy / update the Swarm stack ───────────────────────────────────────
-echo "--> Deploying stack '${STACK_NAME}' with image tag '${IMAGE_TAG}'..."
+# ── 7. Deploy / update the Swarm stack ───────────────────────────────────────
+# This starts postgres (and all other services). Migrations run AFTER this.
+echo "--> Deploying stack '${STACK_NAME}' (image: ${IMAGE_TAG})..."
 GHCR_REPO="${GHCR_REPO}" \
 IMAGE_TAG="${IMAGE_TAG}" \
 CSRF_SECRET="${CSRF_SECRET}" \
@@ -109,7 +118,31 @@ CSRF_SECRET="${CSRF_SECRET}" \
     -c "${DEPLOY_DIR}/deploy/docker/stack.yaml" \
     "${STACK_NAME}"
 
-# ── 9. Run database migrations (after stack deploy — postgres must be up) ────
+# ── 8. Wait for postgres to be healthy ────────────────────────────────────────
+# Postgres runs as a Swarm service now. Poll until a container is up and
+# pg_isready succeeds. This is the gate before running migrations.
+echo "--> Waiting for postgres to be ready (timeout: ${POSTGRES_WAIT_TIMEOUT}s)..."
+ELAPSED=0
+while true; do
+  # Find a running container belonging to the postgres service
+  PG_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_postgres" -q 2>/dev/null | head -1)
+  if [ -n "${PG_CONTAINER}" ] && docker exec "${PG_CONTAINER}" pg_isready -U switch -q 2>/dev/null; then
+    echo "    Postgres is ready."
+    break
+  fi
+  if [ "${ELAPSED}" -ge "${POSTGRES_WAIT_TIMEOUT}" ]; then
+    echo "ERROR: Timed out waiting for postgres after ${POSTGRES_WAIT_TIMEOUT}s"
+    echo "       Check service logs: docker service logs ${STACK_NAME}_postgres"
+    exit 1
+  fi
+  sleep 5
+  ELAPSED=$((ELAPSED + 5))
+  echo "    Still waiting... (${ELAPSED}s)"
+done
+
+# ── 9. Run database migrations ────────────────────────────────────────────────
+# One-shot container on the overlay network. Postgres is confirmed healthy above.
+# Applied in alphabetical order; scripts must be idempotent (IF NOT EXISTS etc.).
 echo "--> Running database migrations..."
 docker run --rm \
   --network "${NETWORK_NAME}" \
@@ -117,21 +150,18 @@ docker run --rm \
   --env PGPASSWORD=switch \
   postgres:16-alpine \
   sh -c '
-    echo "Waiting for postgres..."
-    until pg_isready -h postgres -U switch -q; do sleep 2; done
-    echo "Applying migrations..."
     for f in $(ls /schema/*.sql | sort); do
-      echo "  applying $f..."
+      echo "  applying $(basename $f)..."
       psql -h postgres -U switch -d switch -f "$f" -q
     done
     echo "Migrations complete."
   '
 
-echo "==> Deploy complete!"
 echo ""
+echo "==> Deploy complete!"
 echo "    Portal:    http://<VPS_IP>:8000/portal/"
 echo "    Dashboard: http://<VPS_IP>:8080/dashboard/"
 echo "    Uptrace:   http://<VPS_IP>:14318"
 echo ""
 echo "    Services:  docker service ls"
-echo "    Logs:      docker service logs payswitch_gateway -f"
+echo "    Logs:      docker service logs ${STACK_NAME}_gateway -f"
