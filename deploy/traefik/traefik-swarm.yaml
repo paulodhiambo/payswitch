@@ -9,9 +9,9 @@ entryPoints:
   # Bank payment API — mTLS only
   mtls:
     address: ":8443"
-  # Traefik dashboard — HTTP basic-auth secured, internet-accessible
-  dashboard:
-    address: ":8080"
+  # Note: Traefik v3 has a built-in 'traefik' entrypoint on :8080
+  # for the internal API/dashboard. Do NOT define another entrypoint
+  # on 8080 — it causes a 'address already in use' bind error.
 
 api:
   dashboard: true
