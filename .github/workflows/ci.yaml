@@ -207,8 +207,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync repo to VPS
-        # Pinned to commit SHA — avoid @main supply chain risk.
-        uses: easingthemes/ssh-deploy@b3b06c50c5a19ac6b8e5b27c27f95c6f671862e  # v5.0.0
+        uses: easingthemes/ssh-deploy@v5.1.0
         with:
           SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
           REMOTE_HOST: ${{ secrets.VPS_HOST }}
