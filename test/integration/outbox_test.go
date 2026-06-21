@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,9 +14,6 @@ import (
 	"switch/pkg/eventbus"
 	"switch/pkg/outbox"
 )
-
-var topicSeqMu sync.Mutex
-var topicSeq int
 
 func TestKafka_DirectProduceConsume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

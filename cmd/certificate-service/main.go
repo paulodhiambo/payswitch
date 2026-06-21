@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"log"
 	"os"
 	"os/signal"
@@ -50,11 +48,4 @@ func loadDemoParticipants(r *participant.Registry) {
 	log.Print("loaded 2 demo participants")
 }
 
-func certFromPEM(pemBytes []byte) *x509.Certificate {
-	block, _ := pem.Decode(pemBytes)
-	if block == nil {
-		return nil
-	}
-	cert, _ := x509.ParseCertificate(block.Bytes)
-	return cert
-}
+
