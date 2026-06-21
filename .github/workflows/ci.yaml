@@ -226,11 +226,12 @@ jobs:
 
       - name: Run pre-deploy + stack deploy
         uses: appleboy/ssh-action@v1
-        timeout-minutes: 20
+        timeout-minutes: 35
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ubuntu
           key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 30m
           script: |
             set -euo pipefail
 
