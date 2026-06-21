@@ -1,0 +1,51 @@
+# Traefik static config — PRODUCTION / Docker Swarm mode
+# Used by: deploy/docker/stack.yaml
+# For local dev, the original traefik.yaml (file-provider only) is still used.
+
+entryPoints:
+  # Portal SPA + auth endpoints (HTTP — no domain/TLS yet)
+  web:
+    address: ":8000"
+  # Bank payment API — mTLS only
+  mtls:
+    address: ":8443"
+  # Traefik dashboard — HTTP basic-auth secured, internet-accessible
+  dashboard:
+    address: ":8080"
+
+api:
+  dashboard: true
+  # insecure: false (default) — exposed only via the explicit 'dashboard' router
+  # in dynamic.yaml, which enforces basicAuth.
+
+# Responds to GET /ping — used by Docker healthcheck
+ping: {}
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+
+providers:
+  # ── Docker Swarm provider ──────────────────────────────────────────────────
+  # Discovers services via deploy.labels in stack.yaml.
+  # 'network' must match the full overlay network name: {stack_name}_{net_name}
+  docker:
+    swarmMode: true
+    network: payswitch_net
+    exposedByDefault: false
+    watch: true
+  # ── File provider ──────────────────────────────────────────────────────────
+  # Handles: TLS certificates + options (mTLS), all middleware definitions,
+  # and the dashboard router (which can't be a service label because it targets
+  # the internal api@internal service, not a Docker Swarm service).
+  file:
+    filename: /etc/traefik/dynamic.yaml
+    watch: true
+
+tracing:
+  openTelemetry:
+    address: "otelcol:4317"
+    insecure: true

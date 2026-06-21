@@ -1,0 +1,145 @@
+# Traefik dynamic config — shared between local dev (file provider only)
+# and production Swarm (file provider + Docker Swarm provider).
+#
+# This file owns:
+#   • TLS certificates and mTLS options (Swarm labels can't express these)
+#   • All middleware definitions (referenced as @file by both label routes and file routes)
+#   • The dashboard router (targets api@internal — cannot be a Swarm service label)
+#
+# In local dev, the http.routers section also owns the portal/auth/payment routes
+# (since the Docker Swarm provider isn't active). In production Swarm those routes
+# come from service labels (see stack.yaml deploy.labels).
+
+tls:
+  certificates:
+    - certFile: /certs/server-cert.pem
+      keyFile:  /certs/server-key.pem
+  options:
+    default:
+      clientAuth:
+        caFiles:
+          - /certs/ca-cert.pem
+        authType: VerifyClientCertIfGiven
+
+http:
+  routers:
+    # ── Traefik dashboard (production) ───────────────────────────────────────
+    # Port 8080, open to the internet, secured by HTTP basic auth.
+    # Credentials are loaded from Docker secret at /run/secrets/dashboard_users
+    # (htpasswd format: user:$apr1$...).  Generate with pre-deploy.sh.
+    dashboard:
+      entryPoints:
+        - dashboard
+      rule: "PathPrefix(`/`)"
+      service: api@internal
+      middlewares:
+        - dashboard-auth
+
+    # ── Local-dev routes (file provider) ─────────────────────────────────────
+    # These are only active when NOT running in Swarm mode (no Docker provider).
+    # In production Swarm these same routes are defined via deploy.labels in stack.yaml.
+    payments:
+      entryPoints:
+        - mtls
+      rule: "PathPrefix(`/payments`)"
+      service: gateway
+      tls: {}
+      middlewares:
+        - inject-participant-id
+        - rate-limit-payments
+
+    health:
+      entryPoints:
+        - mtls
+      rule: "Path(`/healthz`)"
+      service: gateway
+      tls: {}
+
+    portal-api:
+      entryPoints:
+        - web
+      rule: "PathPrefix(`/portal/api`)"
+      service: portal-api
+      middlewares:
+        - forward-auth
+        - rate-limit-portal
+
+    portal-spa:
+      entryPoints:
+        - web
+      rule: "PathPrefix(`/portal`)"
+      service: portal-api
+      middlewares:
+        - forward-auth
+
+    auth:
+      entryPoints:
+        - web
+      rule: "Path(`/login`) || Path(`/logout`)"
+      service: auth-service
+
+  services:
+    # ── Local-dev service backends (file provider) ────────────────────────────
+    # Not used in Swarm mode (Docker provider resolves these from labels).
+    gateway:
+      loadBalancer:
+        servers:
+          - url: "http://gateway:8080"
+
+    portal-api:
+      loadBalancer:
+        servers:
+          - url: "http://portal-api:8080"
+
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth-service:9000"
+
+  middlewares:
+    # Extracts mTLS client certificate CN → X-Forwarded-Client-Cert
+    inject-participant-id:
+      passTLSClientCert:
+        info:
+          subject:
+            commonName: true
+
+    rate-limit-payments:
+      rateLimit:
+        average: 2000000
+        burst:   4000000
+        period:  1m
+        sourceCriterion:
+          requestHeader: X-Forwarded-For
+
+    rate-limit-portal:
+      rateLimit:
+        average: 300
+        burst:   600
+        period:  1m
+        sourceCriterion:
+          requestHeader: X-Forwarded-For
+
+    # Forward-auth — validates session cookie with auth-service.
+    # On success, auth-service injects identity headers that portal-api reads.
+    forward-auth:
+      forwardAuth:
+        address: "http://auth-service:9000/auth"
+        authResponseHeaders:
+          - X-authentik-uid
+          - X-authentik-username
+          - X-authentik-name
+          - X-authentik-email
+          - X-authentik-groups
+          - X-User-Role
+          - X-Participant-Id
+
+    # Dashboard basic auth.
+    # usersFile is the Docker secret mounted at /run/secrets/dashboard_users.
+    # htpasswd format: username:$apr1$<hash>
+    # Created by pre-deploy.sh using: openssl passwd -apr1 "$TRAEFIK_DASHBOARD_PASSWORD"
+    dashboard-auth:
+      basicAuth:
+        usersFile: "/run/secrets/dashboard_users"
+        realm: "PaySwitch Operations"
+        removeHeader: true   # strip Authorization before proxying to the dashboard
