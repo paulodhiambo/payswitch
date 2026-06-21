@@ -1,0 +1,14 @@
+[Unit]
+Description=Payment Switch Lookup Service
+After=network.target redis.service
+Wants=redis.service
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/opt/payswitch/bin/lookup-service
+EnvironmentFile=/etc/payswitch/env
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
