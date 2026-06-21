@@ -1,0 +1,35 @@
+# Payment Switch — shared environment for all services
+# Copy to /etc/payswitch/env and fill in your values.
+
+# Postgres
+POSTGRES_DSN=postgres://switch:switch@localhost:5432/switch?sslmode=disable
+
+# Kafka / Redpanda
+KAFKA_BROKERS=localhost:9092
+
+# Redis (optional — leave blank to disable)
+REDIS_ADDR=localhost:6379
+
+# OpenTelemetry (optional)
+OTLP_ENDPOINT=
+
+# Gateway HTTP + gRPC
+HTTP_ADDR=:8080
+GRPC_ADDR=:9090
+METRICS_ADDR=:9095
+
+# Downstream service addresses (gateway -> microservices)
+COMPLIANCE_ADDR=localhost:9191
+LOOKUP_ADDR=localhost:9192
+SETTLEMENT_ADDR=localhost:9193
+QUOTING_ADDR=localhost:9194
+NOTIFICATION_ADDR=
+ROUTING_ADDR=
+RECONCILIATION_ADDR=
+
+# Portal API
+PORTAL_ORIGIN=https://portal.example.com
+CSRF_SECRET=
+
+# Bank API
+BANK_API_ENABLED=false

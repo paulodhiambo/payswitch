@@ -1,0 +1,14 @@
+[Unit]
+Description=Payment Switch Audit Service (Kafka consumer)
+After=network.target redpanda.service
+Wants=redpanda.service
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/opt/payswitch/bin/audit-service
+EnvironmentFile=/etc/payswitch/env
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Payment Switch Compliance Service
+After=network.target
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/opt/payswitch/bin/compliance-service
+EnvironmentFile=/etc/payswitch/env
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
