@@ -36,7 +36,8 @@ func newMemRepo() *memRepo {
 func (r *memRepo) Create(_ context.Context, p *domain.Payment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.payments[p.ID] = p
+	cp := *p
+	r.payments[p.ID] = &cp
 	return nil
 }
 
@@ -56,7 +57,8 @@ func (r *memRepo) GetByID(_ context.Context, id string) (*domain.Payment, error)
 	if !ok {
 		return nil, nil
 	}
-	return p, nil
+	cp := *p
+	return &cp, nil
 }
 
 func (r *memRepo) GetByEndToEndID(_ context.Context, e2eID string) (*domain.Payment, error) {
