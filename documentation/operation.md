@@ -32,11 +32,10 @@ docker compose cp certgen:/certs/client-bank-a-key.pem .
 ```
 
 ### B. Submitting a Payment Request (JSON)
-Submit a payment instruction using `curl`. An `Idempotency-Key` header is required to protect against duplicate submissions.
+Submit a payment instruction using `curl`:
 ```bash
 curl -k --cert client-bank-a-cert.pem --key client-bank-a-key.pem \
   https://localhost:8443/payments \
-  -H 'Idempotency-Key: payment-id-12345' \
   -H 'Content-Type: application/json' \
   -d '{
     "end_to_end_id": "E2E-99881",
@@ -49,6 +48,11 @@ curl -k --cert client-bank-a-cert.pem --key client-bank-a-key.pem \
     "remittance_info": "Invoice #4920"
   }'
 ```
+
+The response is `202 Accepted` with a payment ID and `RECEIVED` status. The
+saga runs asynchronously; the final result (pacs.002 XML) is delivered via
+callback to the bank's registered `callback_url`. If no callback URL is
+configured, poll `GET /payments/{id}` for terminal status.
 
 ---
 

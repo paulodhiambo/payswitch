@@ -130,11 +130,12 @@ All state transitions write an outbox event atomically within the same
 Postgres transaction (no dual-write problem). Failed steps trigger
 compensation in reverse order.
 
-`POST /payments` currently executes the saga **synchronously** — the HTTP
-response doesn't return until the payment reaches `COMMITTED` or
-`ABORTED`. This is a deliberate v1 simplification; see
-[Design Decisions](#design-decisions) for the trade-off and when to revisit
-it.
+`POST /payments` returns **202 Accepted** immediately after basic validation
+and persistence. The saga runs in a detached background goroutine and
+delivers the final status via a **pacs.002 XML callback** to the originating
+bank's registered callback URL. Callback delivery retries up to 3 times with
+exponential backoff (1s, 3s, 9s). If no callback URL is configured, the
+status is available via `GET /payments/{id}`.
 
 ---
 
@@ -175,7 +176,8 @@ All config via environment variables (see [pkg/config/config.go](pkg/config/conf
 | `POSTGRES_DSN` | `postgres://switch:switch@localhost:5432/switch?sslmode=disable` | Postgres connection |
 | `REDIS_ADDR` | `""` | Redis address (disabled if empty) |
 | `KAFKA_BROKERS` | `""` | Kafka/Redpanda broker list (disabled if empty) |
-| `OTLP_ENDPOINT` | `""` | OpenTelemetry OTLP gRPC endpoint |
+| `OTLP_ENDPOINT` | `""` | OpenTelemetry OTLP gRPC endpoint (traces, metrics, and logs) |
+| `CALLBACK_TIMEOUT` | `10s` | Timeout for pacs.002 callback delivery requests |
 | `METRICS_ADDR` | `:9095` | Prometheus `/metrics` HTTP address |
 | `SCYLLA_HOSTS` | `""` | ScyllaDB hosts (disabled if empty) |
 | `SCYLLA_KEYSPACE` | `switch` | ScyllaDB keyspace |
@@ -277,7 +279,6 @@ microservices. Test with:
 ```bash
 curl -k --cert client-bank-a-cert.pem --key client-bank-a-key.pem \
   https://localhost:8443/payments \
-  -H 'Idempotency-Key: test-1' \
   -H 'Content-Type: application/json' \
   -d '{"end_to_end_id":"e2e-1","destination_bic":"BANKDEFF","dest_account":"ACC-B","amount":100,"currency":"USD"}'
 ```
@@ -303,10 +304,6 @@ make load-soak     # 30 VUs / 10 min — sustained run, watch for leaks/drift
 ## API
 
 ### Headers
-
-| Header | Required | Description |
-|---|---|---|
-| `Idempotency-Key` | Yes | Client-generated key. A retried request with the same key returns the original response instead of reprocessing the payment. |
 
 In production, Kong terminates mTLS, verifies the client certificate against
 the CA, and injects the client certificate subject DN as the
@@ -353,23 +350,26 @@ Optional ISO 20022 enrichment fields (auto-generated if omitted):
 | `purpose_code` | `""` | ISO 20022 purpose code (e.g. `SALA`) |
 | `remittance_info` | `""` | Unstructured remittance information |
 
-Response `201` (committed):
+Response `202` (accepted):
 
 ```json
 {
   "id": "b1f2e9...",
   "uetr": "550e8400-e29b-41d4-a716-446655440000",
-  "instruction_id": "INSTR-001",
   "end_to_end_id": "e2e-123",
-  "status": "COMMITTED",
-  "iso_status": "ACCP",
+  "status": "RECEIVED",
+  "iso_status": "RCVD",
   "amount": 10000,
   "currency": "USD",
-  "debtor_name": "Alice Smith",
-  "creditor_name": "Bob Jones",
   "created_at": "2026-06-20T10:00:00Z"
 }
 ```
+
+The saga runs asynchronously. The final status is delivered via a **pacs.002
+XML callback** to the bank's registered callback URL (stored in the
+`bank_api_configs` table with [`callback_url`](migrations/postgres/0008_callback_url.sql)).
+If no callback URL is configured, poll `GET /payments/{id}` for the terminal
+status.
 
 `iso_status` is the pacs.002 `TxSts` code derived from the domain status:
 
@@ -475,8 +475,16 @@ make proto
 │   └── certificate/           Certificate-based registration
 ├── migrations/                SQL + CQL schemas
 │   └── postgres/
-│       ├── 0001_init.sql      Core payment schema
-│       └── 0002_iso20022.sql  ISO 20022 enrichment columns
+│       ├── 0001_init.sql              Core payment schema & outbox
+│       ├── 0002_iso20022.sql          ISO 20022 enrichment columns
+│       ├── 0003_portal.sql            Portal CQRS read projection
+│       ├── 0004_seed.sql              Dev seed data
+│       ├── 0005_route_fields.sql      Routing table columns
+│       ├── 0006_bank_api_config.sql   Bank API config (base URLs)
+│       ├── 0007_bank_api_seed.sql     Bank API dev seed
+│       ├── 0008_callback_url.sql      Callback URL per bank
+│       ├── 0009_bank_api_urls.sql     Bank API URL config
+│       └── 0010_sync_payments_trigger.sql  Portal sync trigger
 ├── pkg/
 │   ├── cache/                 Redis client
 │   ├── config/                Environment config (viper)
@@ -506,6 +514,8 @@ make proto
 - **Logs**: structured logging via `pkg/telemetry` — correlate with
   `end_to_end_id`, not the internal payment UUID, since that's what
   participants reference when they ask about a specific payment.
+  When `OTLP_ENDPOINT` is configured, logs are exported via OTel as well
+  (visible in Uptrace's Logs tab alongside traces and metrics).
 
 ---
 
@@ -554,11 +564,11 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 - **mTLS** terminated at Kong API Gateway — client certificate subject DN is
   injected as `X-Participant-Id` header; the gateway parses `CN=` to resolve
   the participant identity.
-- **Synchronous saga execution**: `POST /payments` blocks until
-  `COMMITTED`/`ABORTED` rather than returning `202 Accepted` and making the
-  client poll. Chosen for simplicity in v1. With 10 steps now in the critical
-  path, each remote gRPC call adds to latency — revisit if average response
-  time exceeds the target SLA.
+- **Async saga execution**: `POST /payments` returns `202 Accepted`
+  immediately after basic validation and persistence. The saga runs in a
+  background goroutine and delivers the final status via pacs.002 callback
+  to the bank's registered callback URL. Polling via `GET /payments/{id}`
+  is available as a fallback.
 
 ---
 
@@ -578,9 +588,10 @@ GitHub Actions workflow (`.github/workflows/ci.yaml`):
 - **Routing data / admin API**: Routes are seeded with defaults and loaded
   at startup. There is no admin API to manage routes dynamically or persist
   them to a database.
-- **Synchronous saga latency**: With 10 steps on the critical path, slow
-  gRPC calls compound. Consider making notification and reconciliation
-  steps async (fire-and-forget with retry) to keep `POST /payments` fast.
+- **Saga goroutine isolation**: The saga runs in a background goroutine
+  within the gateway process. If the gateway is restarted, in-flight sagas
+  are lost. Consider an external saga executor (Temporal, camunda) for
+  production resilience.
 - **No account-lookup or routing endpoint** — `source_bic`/`destination_bic`
   are supplied directly by the caller rather than resolved by the switch,
   even though `lookup-service` and `routing-service` exist.
