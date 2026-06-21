@@ -1,0 +1,15 @@
+entryPoints:
+  web:
+    address: ":8000"
+  mtls:
+    address: ":8443"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yaml
+    watch: true
+
+tracing:
+  openTelemetry:
+    address: "otelcol:4317"
+    insecure: true
