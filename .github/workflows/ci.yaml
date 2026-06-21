@@ -3,8 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "documentation/**"
+      - ".github/CODEOWNERS"
+      - "LICENSE"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "documentation/**"
+      - ".github/CODEOWNERS"
+      - "LICENSE"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,105 +22,125 @@ concurrency:
 
 env:
   GO_VERSION: "1.26"
+  REGISTRY: ghcr.io
 
+# ---------------------------------------------------------------------------
+# LINT
+# ---------------------------------------------------------------------------
 jobs:
   lint:
+    name: Go lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-      - run: go mod download
-      - run: go vet ./...
-      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
-        continue-on-error: true
+          cache: true                        # caches $GOPATH/pkg/mod
 
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+        # Removed continue-on-error — findings now block the pipeline.
+        # Suppress existing known violations via staticcheck.conf if needed.
+
+# ---------------------------------------------------------------------------
+# FRONTEND
+# ---------------------------------------------------------------------------
   frontend:
+    name: Portal frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
           cache-dependency-path: portal/package-lock.json
-      - name: Install dependencies
-        run: |
-          cd portal
-          npm ci
-      - name: Lint
-        run: |
-          cd portal
-          npm run lint
-      - name: Build
-        run: |
-          cd portal
-          npm run build
 
+      - name: Install dependencies
+        run: npm ci
+        working-directory: portal
+
+      - name: Lint
+        run: npm run lint
+        working-directory: portal
+
+      - name: Build
+        run: npm run build
+        working-directory: portal
+
+# ---------------------------------------------------------------------------
+# UNIT TESTS
+# ---------------------------------------------------------------------------
   test:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-      - run: go mod download
-      - name: Unit + contract tests
-        run: go test -v -race -count=1 -timeout=120s ./cmd/... ./internal/... ./pkg/...
-      - name: Build all binaries
+          cache: true
+
+      - name: Unit tests with coverage
+        run: |
+          go test -race -count=1 -timeout=120s \
+            -coverprofile=coverage.out \
+            ./internal/... ./pkg/...
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          fail_ci_if_error: false   # advisory — don't break CI if upload fails
+
+      - name: Build all service binaries
         run: |
           for dir in cmd/*/; do
             binary=$(basename "$dir")
+            echo "Building $binary..."
             go build -o /dev/null ./cmd/$binary
           done
 
+# ---------------------------------------------------------------------------
+# INTEGRATION TESTS  (requires Docker daemon — available on ubuntu-latest)
+# ---------------------------------------------------------------------------
   test-integration:
+    name: Integration tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-      - run: go mod download
-      - name: Integration tests (Docker required)
+          cache: true
+
+      - name: Integration tests (testcontainers)
         run: go test -v -race -count=1 -timeout=300s ./test/integration/...
 
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    needs: [lint, test, frontend, docker]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Copy repo to VPS
-        uses: easingthemes/ssh-deploy@main
-        with:
-          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.VPS_HOST }}
-          REMOTE_USER: ubuntu
-          SOURCE: .
-          TARGET: /opt/payswitch/
-          ARGS: -avz --delete --exclude='.git' --exclude='node_modules' --exclude='.github'
-      - name: Deploy with Docker Compose
-        uses: appleboy/ssh-action@v1
-        timeout-minutes: 60
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ubuntu
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            cd /opt/payswitch
-            COMPOSE_PARALLEL_LIMIT=1 docker compose -f deploy/docker/compose.yaml up --build -d
-
+# ---------------------------------------------------------------------------
+# DOCKER BUILD & PUSH  (main branch only)
+# Each service is built in parallel via the matrix.
+# portal-api uses Dockerfile.portal (includes the frontend build stage).
+# All other services use Dockerfile (Go-only, no npm).
+# ---------------------------------------------------------------------------
   docker:
+    name: Docker — ${{ matrix.service }}
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, frontend]
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         service:
           - gateway
@@ -122,26 +152,98 @@ jobs:
           - routing-service
           - reconciliation-service
           - audit-service
+          - auth-service
+          - certgen
           - portal-api
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select Dockerfile
+        id: dockerfile
+        run: |
+          if [ "${{ matrix.service }}" = "portal-api" ]; then
+            echo "file=deploy/docker/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "file=deploy/docker/Dockerfile.service" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: deploy/docker/Dockerfile
+          file: ${{ steps.dockerfile.outputs.file }}
           build-args: SERVICE=${{ matrix.service }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+# ---------------------------------------------------------------------------
+# DEPLOY  (main branch only)
+# Syncs repo to VPS, then runs pre-deploy.sh which:
+#   1. Inits Swarm, creates volumes and overlay network
+#   2. Runs certgen (TLS certs) and DB migrations as one-shot containers
+#   3. Creates Docker secret: dashboard_users (idempotent)
+#   4. Calls `docker stack deploy` with the GHCR image SHA
+# ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to VPS
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [docker, test-integration]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync repo to VPS
+        # Pinned to commit SHA — avoid @main supply chain risk.
+        uses: easingthemes/ssh-deploy@b3b06c50c5a19ac6b8e5b27c27f95c6f671862e  # v5.0.0
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.VPS_HOST }}
+          REMOTE_USER: ubuntu
+          SOURCE: .
+          TARGET: /opt/payswitch/
+          ARGS: >-
+            -avz --delete
+            --exclude='.git'
+            --exclude='node_modules'
+            --exclude='.github'
+            --exclude='.env*'
+            --exclude='*.pem'
+            --exclude='*.key'
+            --exclude='portal/dist'
+
+      - name: Run pre-deploy + stack deploy
+        uses: appleboy/ssh-action@v1
+        timeout-minutes: 20
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ubuntu
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+
+            # Load VPS-local secrets (CSRF_SECRET, TRAEFIK_DASHBOARD_*, etc.)
+            # This file is NOT in git — it must exist on the VPS before first deploy.
+            # See deploy/docker/pre-deploy.sh for required variables.
+            set -a; source /opt/payswitch/.env; set +a
+
+            # Override image tag with the exact SHA just built by CI
+            export IMAGE_TAG="${{ github.sha }}"
+            export GHCR_REPO="${{ env.REGISTRY }}/${{ github.repository }}"
+            export GITHUB_ACTOR="${{ github.actor }}"
+
+            chmod +x /opt/payswitch/deploy/docker/pre-deploy.sh
+            bash /opt/payswitch/deploy/docker/pre-deploy.sh

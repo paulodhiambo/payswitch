@@ -8,8 +8,8 @@ This guide outlines how to access, authenticate, and monitor the payment switch 
 
 | Service / Tool | Access URL / Port | Auth Mechanism | Description |
 | :--- | :--- | :--- | :--- |
-| **Kong API Gateway (mTLS)** | `https://localhost:8443` | Client SSL Certificates (mTLS) | Secure entrypoint for Bank-to-Switch payment requests |
-| **Kong Manager Dashboard** | `http://localhost:8002` | None (Read-only GUI in DB-less mode) | Admin dashboard to inspect routes, plugins, and services |
+| **Traefik API Gateway (mTLS)** | `https://localhost:8443` | Client SSL Certificates (mTLS) | Secure entrypoint for Bank-to-Switch payment requests |
+| **Traefik Dashboard** | `http://localhost:8080` | None | Admin dashboard to inspect routes and services (when enabled) |
 | **Participant Portal** | `http://localhost:8000/portal/` | Auth Service Cookie | Web UI for switch operators and banks |
 | **Uptrace Dashboard** | `http://localhost:14318` | None | Unified OTLP tracing and metrics dashboard |
 | **Direct Portal BFF API** | `http://localhost:8090` | Cookie (bypass gateway for dev) | Developer REST endpoint for portal API |
@@ -21,7 +21,7 @@ This guide outlines how to access, authenticate, and monitor the payment switch 
 
 ## 2. Accessing the Bank Payment API (mTLS)
 
-The Gateway exposes the secure payment processing API on port `8443` through Kong. Kong terminates mTLS and validates client certificates against the dev CA.
+The Gateway exposes the secure payment processing API on port `8443` through Traefik. Traefik terminates mTLS and validates client certificates against the dev CA.
 
 ### A. Pre-requisite: Client Certificates
 Dev certificates are generated automatically by the `certgen` container on initial start. You can copy the generated client keys out of the docker volume using:
@@ -58,7 +58,7 @@ configured, poll `GET /payments/{id}` for terminal status.
 
 ### 3. Participant Portal & Go Auth Service
 
-The Participant Portal is a React SPA proxied by Kong on port `8000` and protected by the custom Go-based `auth-service` forward-authentication.
+The Participant Portal is a React SPA proxied by Traefik on port `8000` and protected by the custom Go-based `auth-service` forward-authentication.
 
 *   **Portal URL**: `http://localhost:8000/portal/`
 
