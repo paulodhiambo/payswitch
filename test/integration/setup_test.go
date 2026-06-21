@@ -95,6 +95,7 @@ func startContainers(ctx context.Context) (*testEnv, error) {
 	for _, migration := range []string{
 		"../../migrations/postgres/0001_init.sql",
 		"../../migrations/postgres/0002_iso20022.sql",
+		"../../migrations/postgres/0005_route_fields.sql",
 	} {
 		sql, err := os.ReadFile(migration)
 		if err != nil {

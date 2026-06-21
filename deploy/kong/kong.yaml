@@ -9,6 +9,9 @@ services:
     host: gateway
     port: 8080
     protocol: http
+    read_timeout: 120000
+    write_timeout: 120000
+    connect_timeout: 10000
     routes:
       - name: payments
         paths:
@@ -18,14 +21,17 @@ services:
           - POST
           - GET
         plugins:
-          - name: request-transformer
+          - name: post-function
             config:
-              add:
-                headers:
-                  - X-Participant-Id:$ssl_client_s_dn
+              access:
+                - |
+                  local dn = ngx.var.ssl_client_s_dn
+                  if dn then
+                    kong.service.request.set_header("X-Participant-Id", dn)
+                  end
           - name: rate-limiting
             config:
-              minute: 200
+              minute: 2000000
               policy: local
       - name: health
         paths:
@@ -49,13 +55,28 @@ services:
         protocols:
           - http
         plugins:
+          # Inject X-Original-URL so Authentik's outpost can match the correct
+          # proxy provider (configured for external_host http://localhost:8000).
+          # Kong's forward-auth sub-request uses Host: authentik-server, so
+          # without this header Authentik returns 404.
+          - name: pre-function
+            config:
+              access:
+                - |
+                  local proto = kong.request.get_forwarded_scheme() or "http"
+                  local host  = kong.request.get_forwarded_host()  or "localhost:8000"
+                  local path  = kong.request.get_path()
+                  local qs    = kong.request.get_raw_query()
+                  local url   = proto .. "://" .. host .. path
+                  if qs and qs ~= "" then url = url .. "?" .. qs end
+                  kong.service.request.set_header("X-Original-URL", url)
           # Forward-auth: Kong sends a sub-request to Authentik's outpost.
           # On success Authentik returns 200 with X-authentik-* headers that
           # Kong copies upstream to portal-api.
           - name: forward-auth
             config:
               http_method: GET
-              address: "http://authentik-server:9000/outpost.goauthentik.io/auth/nginx"
+              address: "http://auth-service:9000/auth"
               trust_response_headers:
                 - X-authentik-uid
                 - X-authentik-username
@@ -84,10 +105,21 @@ services:
         protocols:
           - http
         plugins:
+          - name: pre-function
+            config:
+              access:
+                - |
+                  local proto = kong.request.get_forwarded_scheme() or "http"
+                  local host  = kong.request.get_forwarded_host()  or "localhost:8000"
+                  local path  = kong.request.get_path()
+                  local qs    = kong.request.get_raw_query()
+                  local url   = proto .. "://" .. host .. path
+                  if qs and qs ~= "" then url = url .. "?" .. qs end
+                  kong.service.request.set_header("X-Original-URL", url)
           - name: forward-auth
             config:
               http_method: GET
-              address: "http://authentik-server:9000/outpost.goauthentik.io/auth/nginx"
+              address: "http://auth-service:9000/auth"
               trust_response_headers:
                 - X-authentik-uid
                 - X-authentik-username
@@ -98,20 +130,17 @@ services:
                 - X-Participant-Id
 
   # ---------------------------------------------------------------------------
-  # Authentik itself — login/callback/static (unauthenticated, HTTP on :8000)
+  # Auth Service — login/logout (unauthenticated, HTTP on :8000)
   # ---------------------------------------------------------------------------
-  - name: authentik-service
-    host: authentik-server
+  - name: auth-service
+    host: auth-service
     port: 9000
     protocol: http
     routes:
-      - name: authentik-auth
+      - name: auth-routes
         paths:
-          - /outpost.goauthentik.io
-          - /if/
-          - /api/v3/
-          - /application/o/
-          - /-/
+          - /login
+          - /logout
         strip_path: false
         protocols:
           - http

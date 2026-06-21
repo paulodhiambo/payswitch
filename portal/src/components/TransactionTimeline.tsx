@@ -13,6 +13,8 @@ interface TimelineEntry {
 interface TransactionTimelineProps {
   timeline: TimelineEntry[];
   currentStatus: Step;
+  abortReason?: string | null;
+  expiresAt?: string | null;
 }
 
 const ReservationCountdown: React.FC<{ expiresAt: string }> = ({ expiresAt }) => {
@@ -45,17 +47,27 @@ const ReservationCountdown: React.FC<{ expiresAt: string }> = ({ expiresAt }) =>
   );
 };
 
-export const TransactionTimeline: React.FC<TransactionTimelineProps> = ({ timeline, currentStatus }) => {
+export const TransactionTimeline: React.FC<TransactionTimelineProps> = ({ timeline, currentStatus, abortReason, expiresAt }) => {
   const aborted = currentStatus === 'ABORTED';
 
+  // Normalize timeline to map payment.received -> RECEIVED, etc.
+  const normalizedTimeline = (timeline || []).map((t) => {
+    let ev = t.event.toUpperCase();
+    if (ev.startsWith('PAYMENT.')) {
+      ev = ev.replace('PAYMENT.', '');
+    }
+    return { ...t, event: ev as Step };
+  });
+
   const getStepState = (step: Step) => {
-    const entry = timeline.find((t) => t.event === step);
+    const entry = normalizedTimeline.find((t) => t.event === step);
     if (entry) return 'done';
     if (aborted) return 'skipped';
     return 'pending';
   };
 
   const formatTime = (isoString: string) => {
+    if (!isoString) return '';
     return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
@@ -89,14 +101,14 @@ export const TransactionTimeline: React.FC<TransactionTimelineProps> = ({ timeli
           className="absolute top-[38px] left-[6%] h-[2px] bg-gradient-to-r from-emerald-500 to-indigo-500 -z-10 transition-all duration-500 ease-in-out"
           style={{ 
             width: `${aborted 
-              ? Math.max(0, (timeline.length - 2) / (ORDER.length - 1)) * 88 
-              : Math.max(0, (timeline.length - 1) / (ORDER.length - 1)) * 88}%` 
+              ? Math.max(0, (normalizedTimeline.length - 2) / (ORDER.length - 1)) * 88 
+              : Math.max(0, (normalizedTimeline.length - 1) / (ORDER.length - 1)) * 88}%` 
           }}
         ></div>
 
         <ol className="flex justify-between items-start w-full relative">
           {ORDER.map((step, idx) => {
-            const entry = timeline.find((t) => t.event === step);
+            const entry = normalizedTimeline.find((t) => t.event === step);
             const state = getStepState(step);
             const isActive = currentStatus === step;
 
@@ -138,16 +150,26 @@ export const TransactionTimeline: React.FC<TransactionTimelineProps> = ({ timeli
                 )}
 
                 {/* Countdown display for reservation */}
-                {step === 'RESERVED' && entry?.detail?.expiresAt && currentStatus === 'RESERVED' && (
-                  <ReservationCountdown expiresAt={entry.detail.expiresAt as string} />
+                {step === 'RESERVED' && (entry?.detail?.expiresAt || expiresAt) && currentStatus === 'RESERVED' && (
+                  <ReservationCountdown expiresAt={(entry?.detail?.expiresAt || expiresAt) as string} />
                 )}
 
                 {/* Step specific variables previews */}
-                {entry && entry.detail && (
+                {entry && (
                   <div className="absolute top-[85px] hidden group-hover:block bg-[#0f172a] border border-slate-800 text-[10px] text-gray-300 font-mono p-2 rounded-lg shadow-xl max-w-[160px] text-left z-20 pointer-events-none animate-fade-in">
-                    {step === 'QUOTED' && `Fee: KES ${entry.detail.fee}`}
-                    {step === 'SCREENED' && `Cleared: ${entry.detail.cleared}`}
-                    {step === 'RESERVED' && `Lock expires at ${new Date(entry.detail.expiresAt).toLocaleTimeString()}`}
+                    {step === 'RECEIVED' && 'XML payload received.'}
+                    {step === 'VALIDATED' && 'ISO 20022 schemas verified.'}
+                    {step === 'QUOTED' && (
+                      entry.detail?.fee ? `Fee: KES ${entry.detail.fee}` : 'Quote generated.'
+                    )}
+                    {step === 'SCREENED' && (
+                      entry.detail?.cleared !== undefined ? `Cleared: ${entry.detail.cleared}` : 'Compliance cleared.'
+                    )}
+                    {step === 'RESERVED' && (
+                      entry.detail?.expiresAt ? `Lock expires at ${new Date(entry.detail.expiresAt).toLocaleTimeString()}` : expiresAt ? `Lock expires at ${new Date(expiresAt).toLocaleTimeString()}` : 'Liquidity reserved.'
+                    )}
+                    {step === 'COMMITTED' && 'Saga committed.'}
+                    {step === 'SETTLED' && 'Settlement complete.'}
                   </div>
                 )}
               </li>
@@ -164,10 +186,10 @@ export const TransactionTimeline: React.FC<TransactionTimelineProps> = ({ timeli
                 ABORTED
               </span>
               <time className="text-[10px] text-gray-500 font-mono mt-0.5">
-                {formatTime(timeline.find((t) => t.event === 'ABORTED')?.occurredAt || '')}
+                {formatTime(normalizedTimeline.find((t) => t.event === 'ABORTED')?.occurredAt || '')}
               </time>
-              <span className="text-[10px] text-rose-300 italic font-medium truncate max-w-[100px] mt-0.5" title={timeline.find((t) => t.event === 'ABORTED')?.detail?.reason}>
-                {timeline.find((t) => t.event === 'ABORTED')?.detail?.reason}
+              <span className="text-[10px] text-rose-300 italic font-medium mt-0.5 break-words max-w-[100px] truncate" title={abortReason || normalizedTimeline.find((t) => t.event === 'ABORTED')?.detail?.reason || ''}>
+                {abortReason || normalizedTimeline.find((t) => t.event === 'ABORTED')?.detail?.reason || 'Saga execution aborted'}
               </span>
             </li>
           )}

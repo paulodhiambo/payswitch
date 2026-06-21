@@ -18,6 +18,12 @@ export interface Bank {
   status: 'APPLICATION' | 'SANDBOX' | 'CERTIFICATION' | 'PRODUCTION_ACTIVE' | 'SUSPENDED' | 'DECOMMISSIONED';
   settlementAccount: string;
   notes?: string;
+  apiBaseURL?: string;
+  apiEnabled?: boolean;
+  callbackURL?: string;
+  lookupAPIURL?: string;
+  paymentAPIURL?: string;
+  statusCheckAPIURL?: string;
   onboardedAt: string | null;
   createdAt: string;
 }

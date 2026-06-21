@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.003.001.07">
+  <GetAcct>
+    <MsgHdr>
+      <MsgId>COPEDUA145075</MsgId>
+      <CreDtTm>2025-05-29T11:26:57.4604422Z</CreDtTm>
+    </MsgHdr>
+    <AcctQryDef>
+      <AcctCrit>
+        <NewCrit>
+          <SchCrit>
+            <AcctId>
+              <Id>
+                <Othr>
+                  <Id>4001111547141</Id>
+                </Othr>
+              </Id>
+            </AcctId>
+          </SchCrit>
+        </NewCrit>
+      </AcctCrit>
+    </AcctQryDef>
+  </GetAcct>
+</Document>

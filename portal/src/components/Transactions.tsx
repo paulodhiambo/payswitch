@@ -29,7 +29,16 @@ const TxDetailView: React.FC<TxDetailViewProps> = ({ tx, onBack, getStatusBadge 
   const [isMasked, setIsMasked] = useState(isViewer);
   const [showXml, setShowXml] = useState(false);
 
-  const reservedEvent = tx.timeline.find(e => e.event === 'RESERVED');
+  // Normalize timeline to map payment.received -> RECEIVED, etc.
+  const normalizedTimeline = (tx.timeline || []).map((t) => {
+    let ev = t.event.toUpperCase();
+    if (ev.startsWith('PAYMENT.')) {
+      ev = ev.replace('PAYMENT.', '');
+    }
+    return { ...t, event: ev };
+  });
+
+  const reservedEvent = normalizedTimeline.find(e => e.event === 'RESERVED');
   const expiresAt = reservedEvent?.detail?.expiresAt as string | undefined;
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
 
@@ -58,7 +67,12 @@ const TxDetailView: React.FC<TxDetailViewProps> = ({ tx, onBack, getStatusBadge 
         </button>
       </div>
 
-      <TransactionTimeline timeline={tx.timeline as any} currentStatus={tx.status as any} />
+      <TransactionTimeline 
+        timeline={tx.timeline as any} 
+        currentStatus={tx.status as any} 
+        abortReason={tx.abortReason}
+        expiresAt={expiresAt}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="glass-panel p-6 rounded-2xl lg:col-span-2 space-y-4">
@@ -182,7 +196,7 @@ const TxDetailView: React.FC<TxDetailViewProps> = ({ tx, onBack, getStatusBadge 
         <div className="relative pl-8 space-y-6">
           <div className="absolute left-3.5 top-2 bottom-2 w-0.5 bg-slate-800"></div>
           {EVENT_ORDER.map((step) => {
-            const eventEntry = tx.timeline.find(e => e.event === step);
+            const eventEntry = normalizedTimeline.find(e => e.event === step);
             const isAborted = tx.status === 'ABORTED';
             const state = eventEntry ? 'done' : isAborted ? 'skipped' : 'pending';
             return (
@@ -197,7 +211,7 @@ const TxDetailView: React.FC<TxDetailViewProps> = ({ tx, onBack, getStatusBadge 
                 </div>
                 <div className="flex-grow space-y-1">
                   <div className="flex justify-between items-baseline">
-                    <span className={`text-xs font-bold uppercase tracking-wider ${state === 'done' ? 'text-white' : state === 'skipped' ? 'text-gray-600' : 'text-gray-500'}`}>
+                    <span className={`text-xs font-bold uppercase tracking-wider ${state === 'done' ? 'text-emerald-400' : state === 'skipped' ? 'text-gray-600' : 'text-gray-500'}`}>
                       {step}
                     </span>
                     {eventEntry && (
@@ -210,14 +224,28 @@ const TxDetailView: React.FC<TxDetailViewProps> = ({ tx, onBack, getStatusBadge 
                     <div className="text-xs text-gray-400 font-mono bg-slate-900/40 border border-slate-800/40 rounded-lg p-2.5 mt-1 max-w-xl">
                       {step === 'RECEIVED' && 'Transaction XML payload intercepted by Authentik and API gateway.'}
                       {step === 'VALIDATED' && 'ISO 20022 schemas and syntax rules verified successfully.'}
-                      {step === 'QUOTED' && eventEntry.detail && (
-                        <p>Exchange rate quote generated: Fee = <span className="text-indigo-400">{eventEntry.detail.fee}</span></p>
+                      {step === 'QUOTED' && (
+                        eventEntry.detail?.fee ? (
+                          <p>Exchange rate quote generated: Fee = <span className="text-indigo-400">KES {eventEntry.detail.fee}</span></p>
+                        ) : (
+                          <p>Exchange rate quote generated successfully.</p>
+                        )
                       )}
-                      {step === 'SCREENED' && eventEntry.detail && (
-                        <p>Compliance sanctions screening passed. Cleared: <span className="text-emerald-400">true</span></p>
+                      {step === 'SCREENED' && (
+                        eventEntry.detail?.cleared !== undefined ? (
+                          <p>Compliance sanctions screening passed. Cleared: <span className="text-emerald-400">{String(eventEntry.detail.cleared)}</span></p>
+                        ) : (
+                          <p>Compliance sanctions screening passed. Sanctions check cleared.</p>
+                        )
                       )}
-                      {step === 'RESERVED' && eventEntry.detail?.expiresAt && (
-                        <p>Liquidity reserved. Expires: <span className="text-amber-400">{new Date(eventEntry.detail.expiresAt).toLocaleTimeString()}</span></p>
+                      {step === 'RESERVED' && (
+                        eventEntry.detail?.expiresAt ? (
+                          <p>Liquidity reserved. Expires: <span className="text-amber-400">{new Date(eventEntry.detail.expiresAt).toLocaleTimeString()}</span></p>
+                        ) : expiresAt ? (
+                          <p>Liquidity reserved. Expires: <span className="text-amber-400">{new Date(expiresAt).toLocaleTimeString()}</span></p>
+                        ) : (
+                          <p>Liquidity reserved in settlement account.</p>
+                        )
                       )}
                       {step === 'COMMITTED' && 'Saga committed. Clearing message sent to settlement engine.'}
                       {step === 'SETTLED' && 'Interbank net positions cleared.'}
@@ -233,7 +261,7 @@ const TxDetailView: React.FC<TxDetailViewProps> = ({ tx, onBack, getStatusBadge 
               <div className="flex-grow space-y-1">
                 <span className="text-xs font-bold uppercase tracking-wider text-rose-400">ABORTED</span>
                 <div className="text-xs text-rose-300 font-mono bg-rose-950/20 border border-rose-900/30 rounded-lg p-2.5 mt-1 max-w-xl">
-                  Reason: <span className="font-bold">{tx.abortReason ?? '—'}</span>
+                  Reason: <span className="font-bold">{tx.abortReason || normalizedTimeline.find((t) => t.event === 'ABORTED')?.detail?.reason || 'Saga execution aborted'}</span>
                 </div>
               </div>
             </div>

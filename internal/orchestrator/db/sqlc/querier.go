@@ -17,6 +17,7 @@ type Querier interface {
 	GetPaymentByID(ctx context.Context, id string) (*Payment, error)
 	GetPaymentEventFields(ctx context.Context, id string) (*GetPaymentEventFieldsRow, error)
 	MarkPaymentReserved(ctx context.Context, arg MarkPaymentReservedParams) error
+	UpdatePaymentRoute(ctx context.Context, arg UpdatePaymentRouteParams) error
 	UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error
 	UpdatePaymentStatusReturning(ctx context.Context, arg UpdatePaymentStatusReturningParams) (string, error)
 }

@@ -9,10 +9,9 @@ This guide outlines how to access, authenticate, and monitor the payment switch 
 | Service / Tool | Access URL / Port | Auth Mechanism | Description |
 | :--- | :--- | :--- | :--- |
 | **Kong API Gateway (mTLS)** | `https://localhost:8443` | Client SSL Certificates (mTLS) | Secure entrypoint for Bank-to-Switch payment requests |
-| **Participant Portal** | `http://localhost:8000/portal/` | Authentik Session Cookie + TOTP | Web UI for switch operators and banks |
-| **Authentik Admin Panel** | `http://localhost:9000` | Username / Password | Identity provider administration |
-| **Grafana Dashboard** | `http://localhost:3000` | Anonymous (Admin enabled) | Visualizes metrics and OTLP tracing |
-| **Prometheus Server** | `http://localhost:9090` | None | Centralized metrics scraper and query engine |
+| **Kong Manager Dashboard** | `http://localhost:8002` | None (Read-only GUI in DB-less mode) | Admin dashboard to inspect routes, plugins, and services |
+| **Participant Portal** | `http://localhost:8000/portal/` | Auth Service Cookie | Web UI for switch operators and banks |
+| **Uptrace Dashboard** | `http://localhost:14318` | None | Unified OTLP tracing and metrics dashboard |
 | **Direct Portal BFF API** | `http://localhost:8090` | Cookie (bypass gateway for dev) | Developer REST endpoint for portal API |
 | **Postgres Database** | `localhost:5432` | Username/Password | Orchestrator transaction ledger and state |
 | **Redpanda Console** | `localhost:9092` | None | Kafka/Redpanda broker endpoint |
@@ -53,14 +52,14 @@ curl -k --cert client-bank-a-cert.pem --key client-bank-a-key.pem \
 
 ---
 
-## 3. Participant Portal & Authentik (MFA Login)
+### 3. Participant Portal & Go Auth Service
 
-The Participant Portal is a React SPA proxied by Kong on port `8000` and protected by Authentik forward-authentication.
+The Participant Portal is a React SPA proxied by Kong on port `8000` and protected by the custom Go-based `auth-service` forward-authentication.
 
 *   **Portal URL**: `http://localhost:8000/portal/`
 
 ### A. Bootstrapped Dev Accounts
-You can sign in using one of the following bootstrapped credentials (defined in [portal-application.yaml](file:///Users/paul/GolandProjects/switch/deploy/authentik/blueprints/portal-application.yaml)):
+You can sign in using one of the following bootstrapped credentials:
 
 | Role / Scope | Username | Password | Attribute |
 | :--- | :--- | :--- | :--- |
@@ -69,54 +68,21 @@ You can sign in using one of the following bootstrapped credentials (defined in 
 | **Bank Administrator** | `bank-admin` | `bankadmin` | Scoped to Bank A |
 | **Bank Viewer** | `bank-viewer` | `bankviewer` | Scoped to Bank A |
 
-### B. Authentik Admin Panel
-To manage users, groups, application provider details, or custom header property mappings:
-*   **URL**: `http://localhost:9000/if/admin/`
-*   **Username**: `akadmin` (or `admin@switch.local`)
-*   **Password**: `switchadmin`
-
 ---
 
-## 4. Monitoring & Observability (Grafana, Prometheus & Tempo)
+## 4. Monitoring & Observability (Uptrace)
 
-The stack integrates full metrics collection (Prometheus) and distributed tracing (OpenTelemetry/Tempo).
+The stack integrates full OTLP tracing and metrics collection in a unified dashboard via **Uptrace**.
 
-### A. Grafana
-*   **URL**: `http://localhost:3000`
-*   **Authentication**: None (configured for anonymous admin access).
-*   **Dashboard**: A pre-configured **Payment Switch Overview** dashboard is loaded automatically. It visualizes:
-    *   Active payments in flight (live gauges)
-    *   Cumulative payment counts categorized by status
-    *   Saga steps throughput (steps processed/min)
-    *   HTTP traffic rates and p99/p90 latency quantiles
-
-### B. Distributed Tracing (Tempo)
-To trace payment sagas across the microservice orchestration flow:
-1.  Open Grafana and go to **Explore** (left navigation).
-2.  Select **Tempo** from the datasource dropdown.
-3.  Choose **Search** to list trace spans. You can filter by tags such as:
-    *   `service.name = "gateway"`
-    *   `step` (e.g. `reserve_source`, `screen`, `credit_destination`)
-4.  Each payment saga run aggregates all 10 steps (including downstream gRPC microservice calls) under a single trace ID, making it easy to isolate latency bottlenecks or exceptions.
-
-### C. Prometheus
-Prometheus runs as a background scraping service on port `9090`:
-*   **URL**: `http://localhost:9090`
-*   **Scraping**: Automatically queries metrics from every service container on port `9095` every 5 seconds.
-*   **Ad-hoc Queries**: You can query custom metrics directly via PromQL (e.g., `rate(saga_steps_total[1m])`).
-
-### D. Direct Service Metrics Endpoints
-For debugging, each container exposes raw Prometheus metrics on internal port `9095`. These are forwarded to distinct host ports:
-*   **Gateway**: `http://localhost:9095/metrics`
-*   **Compliance Service**: `http://localhost:9096/metrics`
-*   **Lookup Service**: `http://localhost:9097/metrics`
-*   **Settlement Service**: `http://localhost:9098/metrics`
-*   **Quoting Service**: `http://localhost:9099/metrics`
-*   **Notification Service**: `http://localhost:9100/metrics`
-*   **Routing Service**: `http://localhost:9101/metrics`
-*   **Reconciliation Service**: `http://localhost:9102/metrics`
-
----
+### A. Uptrace
+*   **URL**: `http://localhost:14318`
+*   **Authentication**: None.
+*   **Default Project**: Telemetry is automatically routed to Project 1 (`Default Project`).
+*   **Distributed Tracing**:
+    *   Navigate to the **Traces** tab to search and view payment saga transaction runs.
+    *   Each payment saga aggregates all steps (e.g. `reserve_source`, `screen`, `credit_destination`) under a single trace ID, making it easy to isolate latency bottlenecks or exceptions.
+*   **Metrics**:
+    *   Go to the **Metrics** tab to view standard system metrics and custom transaction rates, latencies, and saga step throughput.
 
 ## 5. Troubleshooting & Operations
 
@@ -135,3 +101,16 @@ docker compose exec postgres psql -U switch -d switch
 Useful SQL queries:
 *   `SELECT id, uetr, status, amount FROM payments;` (view payments and their terminal state)
 *   `SELECT * FROM outbox_events;` (view transactional outbox events waiting to be dispatched to Redpanda)
+
+
+```shell
+# Quick sanity check
+k6 run test/load/smoke.js
+
+# Ramp-up stress test (~3.5 min)
+k6 run test/load/gateway.js
+
+# Sustained soak test (~11 min)
+k6 run test/load/soak.js
+
+```

@@ -78,9 +78,21 @@ func TestSaga_CompensatePayment_RunsAllCompensations(t *testing.T) {
 	second := &mockStep{name: "second"}
 
 	s := saga.New(first, second)
-	p := &domain.Payment{ID: "pay-1"}
+	p := &domain.Payment{ID: "pay-1", Status: domain.StatusCommitted}
 	err := s.CompensatePayment(context.Background(), p)
 	require.NoError(t, err)
 	require.True(t, first.compensated)
 	require.True(t, second.compensated)
+}
+
+func TestSaga_CompensatePayment_OnlyCompletedSteps(t *testing.T) {
+	first := &mockStep{name: "first"}
+	second := &mockStep{name: "second"}
+
+	s := saga.New(first, second)
+	p := &domain.Payment{ID: "pay-1", Status: domain.StatusValidated}
+	err := s.CompensatePayment(context.Background(), p)
+	require.NoError(t, err)
+	require.True(t, first.compensated)
+	require.False(t, second.compensated, "second step should not have been compensated")
 }

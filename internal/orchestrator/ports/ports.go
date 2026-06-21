@@ -15,6 +15,7 @@ type PaymentRepository interface {
 	GetByEndToEndID(ctx context.Context, e2eID string) (*domain.Payment, error)
 	FindExpiredReservations(ctx context.Context, before time.Time) ([]domain.Reservation, error)
 	MarkReserved(ctx context.Context, id string, ttl time.Duration) error
+	UpdateRoute(ctx context.Context, id string, fee int64, estimatedMs int) error
 }
 
 type BankClient interface {

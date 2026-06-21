@@ -91,6 +91,8 @@ func (s *Server) mountAPIRoutes(r chi.Router, prefix string) {
 			r.Use(s.bankScopeMiddleware)
 			r.Get("/", s.getBank)
 			r.With(RequireRoles(auth.RoleSwitchAdmin)).Patch("/status", s.updateBankStatus)
+			r.With(RequireRoles(auth.RoleSwitchAdmin)).Patch("/api", s.updateBankAPI)
+			r.With(RequireRoles(auth.RoleSwitchAdmin, auth.RoleBankAdmin)).Patch("/callback", s.updateBankCallback)
 			r.Get("/certificates", s.listCertificates)
 			r.With(RequireRoles(auth.RoleSwitchAdmin, auth.RoleBankAdmin)).Post("/certificates", s.createCertificate)
 			r.With(RequireRoles(auth.RoleSwitchAdmin, auth.RoleBankAdmin)).Delete("/certificates/{certId}", s.revokeCertificate)
@@ -251,6 +253,71 @@ func (s *Server) updateBankStatus(w http.ResponseWriter, r *http.Request) {
 
 	claims := auth.FromRequest(r)
 	_ = s.store.InsertAuditLog(r.Context(), claims.Sub, claims.Role, "bank.status_change", "bank", bankID, req)
+
+	writeJSON(w, http.StatusOK, bank)
+}
+
+type updateAPIRequest struct {
+	APIBaseURL         string `json:"apiBaseUrl"`
+	APIEnabled         bool   `json:"apiEnabled"`
+	LookupAPIURL       string `json:"lookupApiUrl"`
+	PaymentAPIURL       string `json:"paymentApiUrl"`
+	StatusCheckAPIURL  string `json:"statusCheckApiUrl"`
+}
+
+func (s *Server) updateBankAPI(w http.ResponseWriter, r *http.Request) {
+	bankID := chi.URLParam(r, "bankId")
+	var req updateAPIRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	bank, err := s.store.UpdateBankAPI(r.Context(), bankID, store.UpdateBankAPIParams{
+		APIBaseURL:         req.APIBaseURL,
+		APIEnabled:         req.APIEnabled,
+		LookupAPIURL:      req.LookupAPIURL,
+		PaymentAPIURL:     req.PaymentAPIURL,
+		StatusCheckAPIURL: req.StatusCheckAPIURL,
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if bank == nil {
+		writeError(w, http.StatusNotFound, "bank not found")
+		return
+	}
+
+	claims := auth.FromRequest(r)
+	_ = s.store.InsertAuditLog(r.Context(), claims.Sub, claims.Role, "bank.api_config", "bank", bankID, req)
+
+	writeJSON(w, http.StatusOK, bank)
+}
+
+func (s *Server) updateBankCallback(w http.ResponseWriter, r *http.Request) {
+	bankID := chi.URLParam(r, "bankId")
+
+	var req struct {
+		CallbackURL string `json:"callbackUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	bank, err := s.store.UpdateBankCallback(r.Context(), bankID, req.CallbackURL)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if bank == nil {
+		writeError(w, http.StatusNotFound, "bank not found")
+		return
+	}
+
+	claims := auth.FromRequest(r)
+	_ = s.store.InsertAuditLog(r.Context(), claims.Sub, claims.Role, "bank.callback_config", "bank", bankID, req)
 
 	writeJSON(w, http.StatusOK, bank)
 }

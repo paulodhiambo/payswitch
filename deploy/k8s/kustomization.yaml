@@ -17,7 +17,7 @@ resources:
   - postgres.yaml
   - redis.yaml
   - redpanda.yaml
-  - tempo.yaml
+  - jaeger.yaml
   - gateway.yaml
   - kong.yaml
   - audit-service.yaml

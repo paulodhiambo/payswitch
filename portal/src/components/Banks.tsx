@@ -13,7 +13,12 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle,
-  FileCheck2
+  FileCheck2,
+  Settings,
+  Globe,
+  Webhook,
+  Activity,
+  Edit2
 } from 'lucide-react';
 
 const STATUS_ORDER: Bank['status'][] = ['APPLICATION', 'SANDBOX', 'CERTIFICATION', 'PRODUCTION_ACTIVE'];
@@ -43,6 +48,15 @@ export const Banks: React.FC = () => {
   const [pemInput, setPemInput] = useState('');
   const [showSuspendModal, setShowSuspendModal] = useState(false);
   const [suspendReason, setSuspendReason] = useState('');
+  const [showApiModal, setShowApiModal] = useState(false);
+  const [apiForm, setApiForm] = useState({
+    apiBaseUrl: '',
+    apiEnabled: false,
+    callbackUrl: '',
+    lookupApiUrl: '',
+    paymentApiUrl: '',
+    statusCheckApiUrl: '',
+  });
 
   // For bank roles, auto-use their bank; for switch admins, use click selection
   const activeBankId = isBankRole ? currentBankId : selectedBankId;
@@ -92,6 +106,48 @@ export const Banks: React.FC = () => {
     mutationFn: ({ bankId, certId }: { bankId: string; certId: string }) => api.revokeCertificate(bankId, certId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['certs', activeBankId] }),
   });
+
+  const updateAPIMut = useMutation({
+    mutationFn: ({ bankId, data }: { bankId: string; data: any }) => api.updateBankAPI(bankId, data),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['bank', activeBankId] }); queryClient.invalidateQueries({ queryKey: ['banks'] }); }
+  });
+
+  const updateCallbackMut = useMutation({
+    mutationFn: ({ bankId, callbackUrl }: { bankId: string; callbackUrl: string }) => api.updateBankCallback(bankId, callbackUrl),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['bank', activeBankId] }); queryClient.invalidateQueries({ queryKey: ['banks'] }); }
+  });
+
+  const handleApiConfigSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeBankId) return;
+
+    try {
+      if (isSwitchAdmin) {
+        await updateAPIMut.mutateAsync({
+          bankId: activeBankId,
+          data: {
+            apiBaseUrl: apiForm.apiBaseUrl,
+            apiEnabled: apiForm.apiEnabled,
+            lookupApiUrl: apiForm.lookupApiUrl,
+            paymentApiUrl: apiForm.paymentApiUrl,
+            statusCheckApiUrl: apiForm.statusCheckApiUrl,
+          }
+        });
+        await updateCallbackMut.mutateAsync({
+          bankId: activeBankId,
+          callbackUrl: apiForm.callbackUrl,
+        });
+      } else if (isBankAdmin) {
+        await updateCallbackMut.mutateAsync({
+          bankId: activeBankId,
+          callbackUrl: apiForm.callbackUrl,
+        });
+      }
+      setShowApiModal(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const handleOnboardSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -238,6 +294,103 @@ export const Banks: React.FC = () => {
           </div>
         </div>
 
+        {/* Gateway API Integration Card */}
+        <div className="glass-panel p-6 rounded-2xl space-y-6">
+          <div className="flex justify-between items-center border-b border-slate-800/40 pb-4">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Settings className="h-5 w-5 text-indigo-400" />
+                <span>Gateway API Integration</span>
+              </h3>
+              <p className="text-xs text-gray-400 mt-1">Configure connection details for routing lookups, payments, and notifications.</p>
+            </div>
+            {(isSwitchAdmin || isBankAdmin) && (
+              <button
+                onClick={() => {
+                  setApiForm({
+                    apiBaseUrl: activeBank.apiBaseURL ?? '',
+                    apiEnabled: activeBank.apiEnabled ?? false,
+                    callbackUrl: activeBank.callbackURL ?? '',
+                    lookupApiUrl: activeBank.lookupAPIURL ?? '',
+                    paymentApiUrl: activeBank.paymentAPIURL ?? '',
+                    statusCheckApiUrl: activeBank.statusCheckAPIURL ?? '',
+                  });
+                  setShowApiModal(true);
+                }}
+                className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-lg transition-colors border border-slate-700/50"
+              >
+                <Edit2 className="h-3.5 w-3.5 text-indigo-300" />
+                <span>Configure APIs</span>
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Status and Base URL */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-3.5 bg-slate-900/40 rounded-xl border border-slate-800/60">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-gray-400 block font-mono">API Connection State</span>
+                  <span className="text-xs font-semibold text-gray-300">
+                    {activeBank.apiEnabled ? 'Enabled & Routing Inbound Transactions' : 'Disabled / Offline'}
+                  </span>
+                </div>
+                <div className="flex items-center">
+                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider
+                    ${activeBank.apiEnabled
+                      ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/30'
+                      : 'bg-rose-950/40 text-rose-400 border border-rose-900/30'}`}>
+                    {activeBank.apiEnabled ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/40 rounded-xl border border-slate-800/60 space-y-1">
+                <span className="text-[10px] text-gray-400 block font-mono flex items-center gap-1.5">
+                  <Globe className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>API Base URL</span>
+                </span>
+                <span className="text-xs text-gray-200 font-mono break-all">{activeBank.apiBaseURL || 'Not configured'}</span>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/40 rounded-xl border border-slate-800/60 space-y-1">
+                <span className="text-[10px] text-gray-400 block font-mono flex items-center gap-1.5">
+                  <Webhook className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Callback Notification URL</span>
+                </span>
+                <span className="text-xs text-gray-200 font-mono break-all">{activeBank.callbackURL || 'Not configured'}</span>
+              </div>
+            </div>
+
+            {/* Specialized Endpoint URLs */}
+            <div className="space-y-4">
+              <div className="p-3.5 bg-slate-900/40 rounded-xl border border-slate-800/60 space-y-1">
+                <span className="text-[10px] text-gray-400 block font-mono flex items-center gap-1.5">
+                  <Activity className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Lookup Endpoint URL</span>
+                </span>
+                <span className="text-xs text-gray-200 font-mono break-all">{activeBank.lookupAPIURL || 'Using Base URL fallback'}</span>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/40 rounded-xl border border-slate-800/60 space-y-1">
+                <span className="text-[10px] text-gray-400 block font-mono flex items-center gap-1.5">
+                  <Activity className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Payment Endpoint URL</span>
+                </span>
+                <span className="text-xs text-gray-200 font-mono break-all">{activeBank.paymentAPIURL || 'Using Base URL fallback'}</span>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/40 rounded-xl border border-slate-800/60 space-y-1">
+                <span className="text-[10px] text-gray-400 block font-mono flex items-center gap-1.5">
+                  <Activity className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Status Check Endpoint URL</span>
+                </span>
+                <span className="text-xs text-gray-200 font-mono break-all">{activeBank.statusCheckAPIURL || 'Using Base URL fallback'}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Certificates */}
         <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between space-y-4">
           <div>
@@ -334,6 +487,121 @@ export const Banks: React.FC = () => {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* API Config Modal */}
+        {showApiModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="glass-panel w-full max-w-xl p-6 rounded-2xl border border-slate-800 shadow-2xl relative scrollbar-thin max-h-[90vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-white">Configure API Endpoints</h3>
+                <span className="text-xs text-gray-500 font-mono">BIC: {activeBank.bic}</span>
+              </div>
+              <form onSubmit={handleApiConfigSubmit} className="space-y-4">
+                {/* Switch Admin Only: Base URL and Toggle */}
+                <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800/80 space-y-4">
+                  <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider font-mono">Base Connection Settings</h4>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-xs font-semibold text-gray-200">API Gateway Routing</label>
+                      <p className="text-[10px] text-gray-500">Enable or disable outbound HTTP traffic to this bank.</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!isSwitchAdmin}
+                      onClick={() => setApiForm({ ...apiForm, apiEnabled: !apiForm.apiEnabled })}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50
+                        ${apiForm.apiEnabled ? 'bg-indigo-600' : 'bg-slate-800'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out
+                        ${apiForm.apiEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-gray-400">API Base URL</label>
+                    <input
+                      type="text"
+                      disabled={!isSwitchAdmin}
+                      placeholder="e.g. http://bank-service:8081"
+                      value={apiForm.apiBaseUrl}
+                      onChange={(e) => setApiForm({ ...apiForm, apiBaseUrl: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 disabled:opacity-50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Switch Admin & Bank Admin: Callback URL */}
+                <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800/80 space-y-1">
+                  <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider font-mono mb-2">Notification Settings</h4>
+                  <label className="text-xs font-semibold text-gray-400">Callback Notification URL</label>
+                  <input
+                    type="text"
+                    disabled={!isSwitchAdmin && !isBankAdmin}
+                    placeholder="e.g. http://bank-service:8081/payments/callback"
+                    value={apiForm.callbackUrl}
+                    onChange={(e) => setApiForm({ ...apiForm, callbackUrl: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 disabled:opacity-50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">The callback endpoint where the switch will send payment settlement status updates.</p>
+                </div>
+
+                {/* Switch Admin Only: Specific Endpoints */}
+                <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800/80 space-y-4">
+                  <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider font-mono">Specialized Endpoint Overrides</h4>
+                  <p className="text-[10px] text-gray-500">Provide absolute URL overrides if specialized services route separately. Leave empty to fallback to Base URL + operation paths.</p>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-gray-400">Lookup Endpoint URL</label>
+                    <input
+                      type="text"
+                      disabled={!isSwitchAdmin}
+                      placeholder="e.g. http://bank-service:8081/accounts/lookup"
+                      value={apiForm.lookupApiUrl}
+                      onChange={(e) => setApiForm({ ...apiForm, lookupApiUrl: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 disabled:opacity-50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-gray-400">Payment Endpoint URL</label>
+                    <input
+                      type="text"
+                      disabled={!isSwitchAdmin}
+                      placeholder="e.g. http://bank-service:8081/payments"
+                      value={apiForm.paymentApiUrl}
+                      onChange={(e) => setApiForm({ ...apiForm, paymentApiUrl: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 disabled:opacity-50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-gray-400">Status Check Endpoint URL</label>
+                    <input
+                      type="text"
+                      disabled={!isSwitchAdmin}
+                      placeholder="e.g. http://bank-service:8081/status"
+                      value={apiForm.statusCheckApiUrl}
+                      onChange={(e) => setApiForm({ ...apiForm, statusCheckApiUrl: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 disabled:opacity-50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-3 pt-4 border-t border-slate-800/40">
+                  <button type="button" onClick={() => setShowApiModal(false)} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-400 hover:text-white">Cancel</button>
+                  <button
+                    type="submit"
+                    disabled={updateAPIMut.isPending || updateCallbackMut.isPending}
+                    className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-sm font-semibold text-white shadow-lg shadow-indigo-600/30 disabled:opacity-50"
+                  >
+                    {updateAPIMut.isPending || updateCallbackMut.isPending ? 'Saving...' : 'Save Configuration'}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}

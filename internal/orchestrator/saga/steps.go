@@ -55,10 +55,10 @@ func (s *LookupStep) Execute(ctx context.Context, p *domain.Payment) error {
 		return fmt.Errorf("lookup destination BIC: %w", err)
 	}
 	slog.Debug("destination BIC resolved", "bic", p.DestinationBIC, "name", name, "country", country)
-	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusValidated); err != nil {
+	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusLookedUp); err != nil {
 		return fmt.Errorf("update status after BIC lookup: %w", err)
 	}
-	p.Status = domain.StatusValidated
+	p.Status = domain.StatusLookedUp
 	return nil
 }
 
@@ -80,8 +80,8 @@ func (s *RouteStep) Execute(ctx context.Context, p *domain.Payment) error {
 	}
 	p.RouteFee = fee
 	p.RouteEstimatedMs = estimatedMs
-	if err := s.Repo.UpdateStatus(ctx, p.ID, domain.StatusRouted); err != nil {
-		return fmt.Errorf("update status to ROUTED: %w", err)
+	if err := s.Repo.UpdateRoute(ctx, p.ID, fee, estimatedMs); err != nil {
+		return fmt.Errorf("update route info: %w", err)
 	}
 	p.Status = domain.StatusRouted
 	slog.Debug("route found", "source", p.SourceBIC, "dest", p.DestinationBIC, "fee", fee, "estimated_ms", estimatedMs)

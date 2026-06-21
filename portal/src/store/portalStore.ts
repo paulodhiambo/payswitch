@@ -117,5 +117,8 @@ export const usePortalStore = create<PortalState>((set) => ({
       activeSubPage: 'list',
       activeEntityId: null,
     });
+    if (window.location.pathname.startsWith('/portal')) {
+      window.location.href = '/logout';
+    }
   },
 }));

@@ -21,11 +21,11 @@ data:
               - POST
               - GET
             plugins:
-              - name: request-transformer
+              - name: post-function
                 config:
-                  add:
-                    headers:
-                      - X-Participant-Id:$ssl_client_s_dn
+                  access:
+                    - |
+                      kong.service.request.set_header("X-Participant-Id", ngx.var.ssl_client_s_dn)
               - name: rate-limiting
                 config:
                   minute: 200

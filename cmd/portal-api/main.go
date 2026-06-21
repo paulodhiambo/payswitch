@@ -31,7 +31,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("portal-api")
+	logger, lp, err := telemetry.InitLogger(ctx, cfg.OTLPEndpoint, "portal-api")
+	if err != nil {
+		log.Fatalf("init logger: %v", err)
+	}
+	if lp != nil {
+		defer lp.Shutdown(ctx)
+	}
 
 	if cfg.OTLPEndpoint != "" {
 		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "portal-api")

@@ -32,6 +32,12 @@ type Bank struct {
 	Country           string     `json:"country"`
 	Status            string     `json:"status"`
 	SettlementAccount string     `json:"settlementAccount"`
+	APIBaseURL        string     `json:"apiBaseURL,omitempty"`
+	APIEnabled        bool       `json:"apiEnabled"`
+	CallbackURL       string     `json:"callbackURL,omitempty"`
+	LookupAPIURL      string     `json:"lookupAPIURL,omitempty"`
+	PaymentAPIURL     string     `json:"paymentAPIURL,omitempty"`
+	StatusCheckAPIURL string     `json:"statusCheckAPIURL,omitempty"`
 	OnboardedAt       *time.Time `json:"onboardedAt"`
 	CreatedAt         time.Time  `json:"createdAt"`
 }
@@ -42,26 +48,54 @@ type CreateBankParams struct {
 	Country           string
 	SettlementAccount string
 	Notes             string
+	APIBaseURL        string
+	APIEnabled        bool
+	CallbackURL       string
+	LookupAPIURL      string
+	PaymentAPIURL     string
+	StatusCheckAPIURL string
+}
+
+type UpdateBankAPIParams struct {
+	APIBaseURL        string
+	APIEnabled        bool
+	LookupAPIURL      string
+	PaymentAPIURL     string
+	StatusCheckAPIURL string
 }
 
 func (s *Store) CreateBank(ctx context.Context, p CreateBankParams) (*Bank, error) {
 	id := uuid.New().String()
 	var b Bank
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO bank (id, bic, name, country, settlement_account, notes)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, bic, name, country, status, settlement_account, onboarded_at, created_at`,
+		`INSERT INTO bank (id, bic, name, country, settlement_account, notes, api_base_url, api_enabled, callback_url, lookup_api_url, payment_api_url, status_check_api_url)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 RETURNING id, bic, name, country, status, settlement_account,
+		           COALESCE(api_base_url, ''), api_enabled, COALESCE(callback_url, ''),
+		           COALESCE(lookup_api_url, ''), COALESCE(payment_api_url, ''), COALESCE(status_check_api_url, ''),
+		           onboarded_at, created_at`,
 		id, p.BIC, p.Name, p.Country, p.SettlementAccount, nilIfEmpty(p.Notes),
-	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount, &b.OnboardedAt, &b.CreatedAt)
+		nilIfEmpty(p.APIBaseURL), p.APIEnabled, nilIfEmpty(p.CallbackURL),
+		nilIfEmpty(p.LookupAPIURL), nilIfEmpty(p.PaymentAPIURL), nilIfEmpty(p.StatusCheckAPIURL),
+	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount,
+		&b.APIBaseURL, &b.APIEnabled, &b.CallbackURL,
+		&b.LookupAPIURL, &b.PaymentAPIURL, &b.StatusCheckAPIURL,
+		&b.OnboardedAt, &b.CreatedAt)
 	return &b, err
 }
 
 func (s *Store) GetBank(ctx context.Context, id string) (*Bank, error) {
 	var b Bank
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, bic, name, country, status, settlement_account, onboarded_at, created_at
+		`SELECT id, bic, name, country, status, settlement_account,
+		        COALESCE(api_base_url, ''), api_enabled, COALESCE(callback_url, ''),
+		        COALESCE(lookup_api_url, ''), COALESCE(payment_api_url, ''), COALESCE(status_check_api_url, ''),
+		        onboarded_at, created_at
 		 FROM bank WHERE id = $1`, id,
-	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount, &b.OnboardedAt, &b.CreatedAt)
+	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount,
+		&b.APIBaseURL, &b.APIEnabled, &b.CallbackURL,
+		&b.LookupAPIURL, &b.PaymentAPIURL, &b.StatusCheckAPIURL,
+		&b.OnboardedAt, &b.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -71,9 +105,57 @@ func (s *Store) GetBank(ctx context.Context, id string) (*Bank, error) {
 func (s *Store) GetBankByBIC(ctx context.Context, bic string) (*Bank, error) {
 	var b Bank
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, bic, name, country, status, settlement_account, onboarded_at, created_at
+		`SELECT id, bic, name, country, status, settlement_account,
+		        COALESCE(api_base_url, ''), api_enabled, COALESCE(callback_url, ''),
+		        COALESCE(lookup_api_url, ''), COALESCE(payment_api_url, ''), COALESCE(status_check_api_url, ''),
+		        onboarded_at, created_at
 		 FROM bank WHERE bic = $1`, bic,
-	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount, &b.OnboardedAt, &b.CreatedAt)
+	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount,
+		&b.APIBaseURL, &b.APIEnabled, &b.CallbackURL,
+		&b.LookupAPIURL, &b.PaymentAPIURL, &b.StatusCheckAPIURL,
+		&b.OnboardedAt, &b.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &b, err
+}
+
+func (s *Store) UpdateBankCallback(ctx context.Context, id string, callbackURL string) (*Bank, error) {
+	var b Bank
+	err := s.pool.QueryRow(ctx,
+		`UPDATE bank
+		 SET callback_url = $1
+		 WHERE id = $2
+		 RETURNING id, bic, name, country, status, settlement_account,
+		           COALESCE(api_base_url, ''), api_enabled, COALESCE(callback_url, ''),
+		           COALESCE(lookup_api_url, ''), COALESCE(payment_api_url, ''), COALESCE(status_check_api_url, ''),
+		           onboarded_at, created_at`,
+		nilIfEmpty(callbackURL), id,
+	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount,
+		&b.APIBaseURL, &b.APIEnabled, &b.CallbackURL,
+		&b.LookupAPIURL, &b.PaymentAPIURL, &b.StatusCheckAPIURL,
+		&b.OnboardedAt, &b.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &b, err
+}
+
+func (s *Store) UpdateBankAPI(ctx context.Context, id string, p UpdateBankAPIParams) (*Bank, error) {
+	var b Bank
+	err := s.pool.QueryRow(ctx,
+		`UPDATE bank
+		 SET api_base_url = $1, api_enabled = $2, lookup_api_url = $3, payment_api_url = $4, status_check_api_url = $5
+		 WHERE id = $6
+		 RETURNING id, bic, name, country, status, settlement_account,
+		           COALESCE(api_base_url, ''), api_enabled, COALESCE(callback_url, ''),
+		           COALESCE(lookup_api_url, ''), COALESCE(payment_api_url, ''), COALESCE(status_check_api_url, ''),
+		           onboarded_at, created_at`,
+		nilIfEmpty(p.APIBaseURL), p.APIEnabled, nilIfEmpty(p.LookupAPIURL), nilIfEmpty(p.PaymentAPIURL), nilIfEmpty(p.StatusCheckAPIURL), id,
+	).Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount,
+		&b.APIBaseURL, &b.APIEnabled, &b.CallbackURL,
+		&b.LookupAPIURL, &b.PaymentAPIURL, &b.StatusCheckAPIURL,
+		&b.OnboardedAt, &b.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -114,7 +196,10 @@ func (s *Store) ListBanks(ctx context.Context, f BankListFilter) (*PaginatedResu
 	offset := (f.Page - 1) * f.PageSize
 	args = append(args, f.PageSize, offset)
 	query := fmt.Sprintf(
-		`SELECT id, bic, name, country, status, settlement_account, onboarded_at, created_at
+		`SELECT id, bic, name, country, status, settlement_account,
+		        COALESCE(api_base_url, ''), api_enabled, COALESCE(callback_url, ''),
+		        COALESCE(lookup_api_url, ''), COALESCE(payment_api_url, ''), COALESCE(status_check_api_url, ''),
+		        onboarded_at, created_at
 		 FROM bank %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d`,
 		whereClause, len(args)-1, len(args))
 
@@ -127,7 +212,10 @@ func (s *Store) ListBanks(ctx context.Context, f BankListFilter) (*PaginatedResu
 	var banks []Bank
 	for rows.Next() {
 		var b Bank
-		if err := rows.Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount, &b.OnboardedAt, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.BIC, &b.Name, &b.Country, &b.Status, &b.SettlementAccount,
+			&b.APIBaseURL, &b.APIEnabled, &b.CallbackURL,
+			&b.LookupAPIURL, &b.PaymentAPIURL, &b.StatusCheckAPIURL,
+			&b.OnboardedAt, &b.CreatedAt); err != nil {
 			return nil, err
 		}
 		banks = append(banks, b)
@@ -668,8 +756,8 @@ func (s *Store) ListSettlementWindows(ctx context.Context, bic string, from, to 
 		       'KES' AS currency,
 		       coalesce(sum(amount), 0) AS net
 		FROM transaction_view %s
-		GROUP BY settlement_date
-		ORDER BY settlement_date DESC
+		GROUP BY created_at::date
+		ORDER BY created_at::date DESC
 		LIMIT $%d OFFSET $%d`, whereClause, len(args)-1, len(args))
 
 	rows, err := s.pool.Query(ctx, query, args...)

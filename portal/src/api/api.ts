@@ -29,6 +29,10 @@ export const api = {
     apiClient.post<Bank>('/banks', data).then(r => r.data),
   updateBankStatus: (bankId: string, status: string, reason?: string) =>
     apiClient.patch<Bank>(`/banks/${bankId}/status`, { status, reason }).then(r => r.data),
+  updateBankAPI: (bankId: string, data: { apiBaseUrl: string; apiEnabled: boolean; lookupApiUrl: string; paymentApiUrl: string; statusCheckApiUrl: string }) =>
+    apiClient.patch<Bank>(`/banks/${bankId}/api`, data).then(r => r.data),
+  updateBankCallback: (bankId: string, callbackUrl: string) =>
+    apiClient.patch<Bank>(`/banks/${bankId}/callback`, { callbackUrl }).then(r => r.data),
 
   listCertificates: (bankId: string) =>
     apiClient.get<Certificate[]>(`/banks/${bankId}/certificates`).then(r => r.data),

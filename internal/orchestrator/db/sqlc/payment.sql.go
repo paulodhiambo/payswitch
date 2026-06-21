@@ -15,29 +15,32 @@ const createPayment = `-- name: CreatePayment :one
 INSERT INTO payment (id, end_to_end_id, source_bic, destination_bic,
                      source_account, dest_account, amount, currency, status,
                      uetr, instr_id, charge_bearer, sttlm_dt,
-                     debtor_name, creditor_name, purpose_code, remittance_info)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-RETURNING id, end_to_end_id, source_bic, destination_bic, source_account, dest_account, amount, currency, status, quote_id, reserved_at, expires_at, created_at, updated_at, uetr, instr_id, charge_bearer, sttlm_dt, debtor_name, creditor_name, purpose_code, remittance_info
+                     debtor_name, creditor_name, purpose_code, remittance_info,
+                     route_fee, route_estimated_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+RETURNING id, end_to_end_id, source_bic, destination_bic, source_account, dest_account, amount, currency, status, quote_id, route_fee, route_estimated_ms, reserved_at, expires_at, created_at, updated_at, uetr, instr_id, charge_bearer, sttlm_dt, debtor_name, creditor_name, purpose_code, remittance_info
 `
 
 type CreatePaymentParams struct {
-	ID             string
-	EndToEndID     string
-	SourceBic      string
-	DestinationBic string
-	SourceAccount  string
-	DestAccount    string
-	Amount         int64
-	Currency       string
-	Status         string
-	UETR           pgtype.Text
-	InstrID        pgtype.Text
-	ChargeBearer   pgtype.Text
-	SttlmDt        pgtype.Date
-	DebtorName     pgtype.Text
-	CreditorName   pgtype.Text
-	PurposeCode    pgtype.Text
-	RemittanceInfo pgtype.Text
+	ID               string
+	EndToEndID       string
+	SourceBic        string
+	DestinationBic   string
+	SourceAccount    string
+	DestAccount      string
+	Amount           int64
+	Currency         string
+	Status           string
+	Uetr             pgtype.Text
+	InstrID          pgtype.Text
+	ChargeBearer     pgtype.Text
+	SttlmDt          pgtype.Date
+	DebtorName       pgtype.Text
+	CreditorName     pgtype.Text
+	PurposeCode      pgtype.Text
+	RemittanceInfo   pgtype.Text
+	RouteFee         pgtype.Int8
+	RouteEstimatedMs pgtype.Int4
 }
 
 func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (*Payment, error) {
@@ -51,7 +54,7 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (*
 		arg.Amount,
 		arg.Currency,
 		arg.Status,
-		arg.UETR,
+		arg.Uetr,
 		arg.InstrID,
 		arg.ChargeBearer,
 		arg.SttlmDt,
@@ -59,6 +62,8 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (*
 		arg.CreditorName,
 		arg.PurposeCode,
 		arg.RemittanceInfo,
+		arg.RouteFee,
+		arg.RouteEstimatedMs,
 	)
 	var i Payment
 	err := row.Scan(
@@ -72,11 +77,13 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (*
 		&i.Currency,
 		&i.Status,
 		&i.QuoteID,
+		&i.RouteFee,
+		&i.RouteEstimatedMs,
 		&i.ReservedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.UETR,
+		&i.Uetr,
 		&i.InstrID,
 		&i.ChargeBearer,
 		&i.SttlmDt,
@@ -130,7 +137,7 @@ func (q *Queries) FindExpiredReservations(ctx context.Context, expiresAt pgtype.
 }
 
 const getPaymentByEndToEndID = `-- name: GetPaymentByEndToEndID :one
-SELECT id, end_to_end_id, source_bic, destination_bic, source_account, dest_account, amount, currency, status, quote_id, reserved_at, expires_at, created_at, updated_at, uetr, instr_id, charge_bearer, sttlm_dt, debtor_name, creditor_name, purpose_code, remittance_info FROM payment WHERE end_to_end_id = $1
+SELECT id, end_to_end_id, source_bic, destination_bic, source_account, dest_account, amount, currency, status, quote_id, route_fee, route_estimated_ms, reserved_at, expires_at, created_at, updated_at, uetr, instr_id, charge_bearer, sttlm_dt, debtor_name, creditor_name, purpose_code, remittance_info FROM payment WHERE end_to_end_id = $1
 `
 
 func (q *Queries) GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (*Payment, error) {
@@ -147,11 +154,13 @@ func (q *Queries) GetPaymentByEndToEndID(ctx context.Context, endToEndID string)
 		&i.Currency,
 		&i.Status,
 		&i.QuoteID,
+		&i.RouteFee,
+		&i.RouteEstimatedMs,
 		&i.ReservedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.UETR,
+		&i.Uetr,
 		&i.InstrID,
 		&i.ChargeBearer,
 		&i.SttlmDt,
@@ -164,7 +173,7 @@ func (q *Queries) GetPaymentByEndToEndID(ctx context.Context, endToEndID string)
 }
 
 const getPaymentByID = `-- name: GetPaymentByID :one
-SELECT id, end_to_end_id, source_bic, destination_bic, source_account, dest_account, amount, currency, status, quote_id, reserved_at, expires_at, created_at, updated_at, uetr, instr_id, charge_bearer, sttlm_dt, debtor_name, creditor_name, purpose_code, remittance_info FROM payment WHERE id = $1
+SELECT id, end_to_end_id, source_bic, destination_bic, source_account, dest_account, amount, currency, status, quote_id, route_fee, route_estimated_ms, reserved_at, expires_at, created_at, updated_at, uetr, instr_id, charge_bearer, sttlm_dt, debtor_name, creditor_name, purpose_code, remittance_info FROM payment WHERE id = $1
 `
 
 func (q *Queries) GetPaymentByID(ctx context.Context, id string) (*Payment, error) {
@@ -181,11 +190,13 @@ func (q *Queries) GetPaymentByID(ctx context.Context, id string) (*Payment, erro
 		&i.Currency,
 		&i.Status,
 		&i.QuoteID,
+		&i.RouteFee,
+		&i.RouteEstimatedMs,
 		&i.ReservedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.UETR,
+		&i.Uetr,
 		&i.InstrID,
 		&i.ChargeBearer,
 		&i.SttlmDt,
@@ -243,6 +254,29 @@ func (q *Queries) MarkPaymentReserved(ctx context.Context, arg MarkPaymentReserv
 		arg.Status,
 		arg.ReservedAt,
 		arg.ExpiresAt,
+		arg.ID,
+	)
+	return err
+}
+
+const updatePaymentRoute = `-- name: UpdatePaymentRoute :exec
+UPDATE payment
+SET route_fee = $1, route_estimated_ms = $2, status = $3, updated_at = now()
+WHERE id = $4
+`
+
+type UpdatePaymentRouteParams struct {
+	RouteFee         pgtype.Int8
+	RouteEstimatedMs pgtype.Int4
+	Status           string
+	ID               string
+}
+
+func (q *Queries) UpdatePaymentRoute(ctx context.Context, arg UpdatePaymentRouteParams) error {
+	_, err := q.db.Exec(ctx, updatePaymentRoute,
+		arg.RouteFee,
+		arg.RouteEstimatedMs,
+		arg.Status,
 		arg.ID,
 	)
 	return err

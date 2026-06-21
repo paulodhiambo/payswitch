@@ -21,7 +21,8 @@ type Step interface {
 }
 
 type Saga struct {
-	steps []Step
+	steps          []Step
+	completedSteps int
 }
 
 func New(steps ...Step) *Saga {
@@ -34,6 +35,7 @@ func (s *Saga) Run(ctx context.Context, p *domain.Payment) error {
 	)
 	defer span.End()
 
+	s.completedSteps = 0
 	completed := make([]Step, 0, len(s.steps))
 	for _, step := range s.steps {
 		if err := s.execStep(ctx, step, p); err != nil {
@@ -43,6 +45,7 @@ func (s *Saga) Run(ctx context.Context, p *domain.Payment) error {
 			return err
 		}
 		completed = append(completed, step)
+		s.completedSteps++
 	}
 	return nil
 }
@@ -56,7 +59,14 @@ func (s *Saga) execStep(ctx context.Context, step Step, p *domain.Payment) error
 }
 
 func (s *Saga) CompensatePayment(ctx context.Context, p *domain.Payment) error {
-	for i := len(s.steps) - 1; i >= 0; i-- {
+	n := s.completedSteps
+	if n <= 0 {
+		n = statusToStepCount(p.Status)
+	}
+	if n > len(s.steps) {
+		n = len(s.steps)
+	}
+	for i := n - 1; i >= 0; i-- {
 		if err := s.steps[i].Compensate(ctx, p); err != nil {
 			return err
 		}
@@ -67,5 +77,33 @@ func (s *Saga) CompensatePayment(ctx context.Context, p *domain.Payment) error {
 func (s *Saga) rollback(ctx context.Context, p *domain.Payment, completed []Step) {
 	for i := len(completed) - 1; i >= 0; i-- {
 		_ = completed[i].Compensate(ctx, p)
+	}
+}
+
+// statusToStepCount maps a payment status to the number of saga steps
+// that must have completed before or at that status. Used by CompensatePayment
+// when the saga did not run in this process (e.g. sweeper).
+func statusToStepCount(status domain.PaymentStatus) int {
+	switch status {
+	case domain.StatusReceived:
+		return 0
+	case domain.StatusValidated:
+		return 1
+	case domain.StatusLookedUp:
+		return 2
+	case domain.StatusRouted:
+		return 3
+	case domain.StatusQuoted:
+		return 4
+	case domain.StatusScreened:
+		return 5
+	case domain.StatusReserved:
+		return 6
+	case domain.StatusCommitted:
+		return 7
+	case domain.StatusSettled:
+		return 8
+	default:
+		return 0
 	}
 }

@@ -42,23 +42,25 @@ func NewPaymentRepo(pool *pgxpool.Pool) *PaymentRepo {
 
 func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 	sqlcPayment, err := r.q.CreatePayment(ctx, sqlc.CreatePaymentParams{
-		ID:             p.ID,
-		EndToEndID:     p.EndToEndID,
-		SourceBic:      p.SourceBIC,
-		DestinationBic: p.DestinationBIC,
-		SourceAccount:  p.SourceAccount,
-		DestAccount:    p.DestAccount,
-		Amount:         p.Amount,
-		Currency:       p.Currency,
-		Status:         string(p.Status),
-		UETR:           textOrNull(p.UETR),
-		InstrID:        textOrNull(p.InstrID),
-		ChargeBearer:   textOrNull(p.ChargeBearer),
-		SttlmDt:        dateOrNull(p.SettlementDate),
-		DebtorName:     textOrNull(p.DebtorName),
-		CreditorName:   textOrNull(p.CreditorName),
-		PurposeCode:    textOrNull(p.PurposeCode),
-		RemittanceInfo: textOrNull(p.RemittanceInfo),
+		ID:               p.ID,
+		EndToEndID:       p.EndToEndID,
+		SourceBic:        p.SourceBIC,
+		DestinationBic:   p.DestinationBIC,
+		SourceAccount:    p.SourceAccount,
+		DestAccount:      p.DestAccount,
+		Amount:           p.Amount,
+		Currency:         p.Currency,
+		Status:           string(p.Status),
+		Uetr:             textOrNull(p.UETR),
+		InstrID:          textOrNull(p.InstrID),
+		ChargeBearer:     textOrNull(p.ChargeBearer),
+		SttlmDt:          dateOrNull(p.SettlementDate),
+		DebtorName:       textOrNull(p.DebtorName),
+		CreditorName:     textOrNull(p.CreditorName),
+		PurposeCode:      textOrNull(p.PurposeCode),
+		RemittanceInfo:   textOrNull(p.RemittanceInfo),
+		RouteFee:         pgtype.Int8{Int64: p.RouteFee, Valid: true},
+		RouteEstimatedMs: pgtype.Int4{Int32: int32(p.RouteEstimatedMs), Valid: true},
 	})
 	if err != nil {
 		return err
@@ -85,14 +87,16 @@ func (r *PaymentRepo) CreateWithEvent(ctx context.Context, p *domain.Payment) er
 		Amount:         p.Amount,
 		Currency:       p.Currency,
 		Status:         string(p.Status),
-		UETR:           textOrNull(p.UETR),
+		Uetr:           textOrNull(p.UETR),
 		InstrID:        textOrNull(p.InstrID),
 		ChargeBearer:   textOrNull(p.ChargeBearer),
 		SttlmDt:        dateOrNull(p.SettlementDate),
 		DebtorName:     textOrNull(p.DebtorName),
 		CreditorName:   textOrNull(p.CreditorName),
 		PurposeCode:    textOrNull(p.PurposeCode),
-		RemittanceInfo: textOrNull(p.RemittanceInfo),
+		RemittanceInfo:   textOrNull(p.RemittanceInfo),
+		RouteFee:         pgtype.Int8{Int64: p.RouteFee, Valid: true},
+		RouteEstimatedMs: pgtype.Int4{Int32: int32(p.RouteEstimatedMs), Valid: true},
 	})
 	if err != nil {
 		return err
@@ -205,6 +209,15 @@ func (r *PaymentRepo) GetByEndToEndID(ctx context.Context, e2eID string) (*domai
 	return mapFromSQLC(sqlcPayment), nil
 }
 
+func (r *PaymentRepo) UpdateRoute(ctx context.Context, id string, fee int64, estimatedMs int) error {
+	return r.q.UpdatePaymentRoute(ctx, sqlc.UpdatePaymentRouteParams{
+		RouteFee:         pgtype.Int8{Int64: fee, Valid: true},
+		RouteEstimatedMs: pgtype.Int4{Int32: int32(estimatedMs), Valid: true},
+		Status:           string(domain.StatusRouted),
+		ID:               id,
+	})
+}
+
 func (r *PaymentRepo) FindExpiredReservations(ctx context.Context, before time.Time) ([]domain.Reservation, error) {
 	rows, err := r.q.FindExpiredReservations(ctx, pgtype.Timestamptz{Time: before, Valid: true})
 	if err != nil {
@@ -242,14 +255,20 @@ func mapFromSQLC(s *sqlc.Payment) *domain.Payment {
 	if s.QuoteID.Valid {
 		p.QuoteID = &s.QuoteID.String
 	}
+	if s.RouteFee.Valid {
+		p.RouteFee = s.RouteFee.Int64
+	}
+	if s.RouteEstimatedMs.Valid {
+		p.RouteEstimatedMs = int(s.RouteEstimatedMs.Int32)
+	}
 	if s.ReservedAt.Valid {
 		p.ReservedAt = &s.ReservedAt.Time
 	}
 	if s.ExpiresAt.Valid {
 		p.ExpiresAt = &s.ExpiresAt.Time
 	}
-	if s.UETR.Valid {
-		p.UETR = s.UETR.String
+	if s.Uetr.Valid {
+		p.UETR = s.Uetr.String
 	}
 	if s.InstrID.Valid {
 		p.InstrID = s.InstrID.String
@@ -280,6 +299,12 @@ func mapToDomain(s *sqlc.Payment, p *domain.Payment) {
 	p.UpdatedAt = s.UpdatedAt.Time
 	if s.QuoteID.Valid {
 		p.QuoteID = &s.QuoteID.String
+	}
+	if s.RouteFee.Valid {
+		p.RouteFee = s.RouteFee.Int64
+	}
+	if s.RouteEstimatedMs.Valid {
+		p.RouteEstimatedMs = int(s.RouteEstimatedMs.Int32)
 	}
 	if s.ReservedAt.Valid {
 		p.ReservedAt = &s.ReservedAt.Time

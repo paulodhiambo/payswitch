@@ -1,47 +1,7 @@
 apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: tempo-config
-  namespace: payment-switch
-data:
-  tempo.yaml: |
-    stream_over_http_enabled: true
-    server:
-      http_listen_port: 3200
-      log_level: warn
-    distributor:
-      receivers:
-        otlp:
-          protocols:
-            grpc:
-              endpoint: 0.0.0.0:4317
-            http:
-              endpoint: 0.0.0.0:4318
-    ingester:
-      trace_idle_period: 10s
-      max_block_bytes: 1_000_000
-      max_block_duration: 5m
-    compactor:
-      compaction:
-        block_retention: 48h
-    storage:
-      trace:
-        backend: local
-        local:
-          path: /var/tempo/blocks
-        wal:
-          path: /var/tempo/wal
-    query_frontend:
-      search:
-        duration_slo: 5s
-        throughput_bytes_slo: 1.073741824e+09
-      trace_by_id:
-        duration_slo: 5s
----
-apiVersion: v1
 kind: Service
 metadata:
-  name: tempo
+  name: jaeger
   namespace: payment-switch
 spec:
   ports:
@@ -51,45 +11,50 @@ spec:
     - port: 4318
       targetPort: 4318
       name: otlp-http
-    - port: 3200
-      targetPort: 3200
-      name: http
+    - port: 16686
+      targetPort: 16686
+      name: ui
+    - port: 14269
+      targetPort: 14269
+      name: admin
   selector:
-    app: tempo
+    app: jaeger
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: tempo
+  name: jaeger
   namespace: payment-switch
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: tempo
+      app: jaeger
   template:
     metadata:
       labels:
-        app: tempo
+        app: jaeger
     spec:
       containers:
-        - name: tempo
-          image: grafana/tempo:2.6.1
-          args: ["-config.file=/etc/tempo/tempo.yaml"]
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.58
+          env:
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
           ports:
             - containerPort: 4317
+              name: otlp-grpc
             - containerPort: 4318
-            - containerPort: 3200
-          volumeMounts:
-            - name: config
-              mountPath: /etc/tempo
-            - name: data
-              mountPath: /var/tempo
+              name: otlp-http
+            - containerPort: 16686
+              name: ui
+            - containerPort: 14269
+              name: admin
           readinessProbe:
             httpGet:
-              path: /ready
-              port: 3200
-            initialDelaySeconds: 10
+              path: /
+              port: 14269
+            initialDelaySeconds: 5
             periodSeconds: 5
           resources:
             requests:
@@ -98,12 +63,6 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
-      volumes:
-        - name: config
-          configMap:
-            name: tempo-config
-        - name: data
-          emptyDir: {}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -111,23 +70,18 @@ metadata:
   name: grafana-datasources
   namespace: payment-switch
 data:
-  tempo.yaml: |
+  jaeger.yaml: |
     apiVersion: 1
     datasources:
-      - name: Tempo
-        type: tempo
-        uid: tempo
-        url: http://tempo:3200
+      - name: Jaeger
+        type: jaeger
+        uid: jaeger
+        url: http://jaeger:16686
         access: proxy
         isDefault: true
         jsonData:
-          httpMethod: GET
           nodeGraph:
             enabled: true
-          traceQuery:
-            timeShiftEnabled: true
-            spanStartTimeShift: 1h
-            spanEndTimeShift: -1h
           spanBar:
             type: Duration
 ---

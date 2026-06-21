@@ -9,6 +9,8 @@ CREATE TABLE payment (
     currency        CHAR(3) NOT NULL,
     status          TEXT NOT NULL,
     quote_id        TEXT,
+    route_fee       BIGINT,
+    route_estimated_ms INT,
     reserved_at     TIMESTAMPTZ,
     expires_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -1,0 +1,607 @@
+{
+  "info": {
+    "name": "ISO 20022 Payment Initiation — Switch Gateway",
+    "description": "Postman collection for banks initiating cross-border payments through the Switch gateway.\n\n## Authentication\n- **Production**: mTLS (client certificate) — configure in Postman Settings → Certificates\n  - Host: `localhost`, Port: `8443`, CRT: `deploy/docker/client-bank-a-cert.pem`, KEY: `deploy/docker/client-bank-a-key.pem`\n\n## Content Negotiation\nThe gateway supports both JSON and ISO 20022 XML (pacs.008) requests.\n\n## ISO 20022 Messages\n- **camt.003.001.07** — Account lookup (POST /payments/lookup)\n- **pacs.008.001.08** — Payment instruction (POST /payments)\n- **pacs.002.001.10** — Payment status report (retrieved via GET /payments/{id} or delivered via callback)\n\n## Async Processing\nPayments are processed asynchronously:\n1. **POST /payments** returns `202 Accepted` immediately with `{\"id\":\"...\",\"status\":\"RECEIVED\",\"iso_status\":\"RCVD\"}`\n2. The saga runs in the background → `COMMITTED` or `ABORTED`\n3. Poll **GET /payments/{id}** for the final status\n4. A **pacs.002 callback** is POSTed to the bank's configured `callback_url` when processing completes",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://localhost:8443",
+      "type": "string"
+    },
+    {
+      "key": "source_bic",
+      "value": "BANKUS33",
+      "type": "string"
+    },
+    {
+      "key": "source_account",
+      "value": "US123456789",
+      "type": "string"
+    },
+    {
+      "key": "participant_id",
+      "value": "bank-a",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /healthz",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is ok\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql(\"ok\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/healthz",
+              "host": ["{{base_url}}"],
+              "path": ["healthz"]
+            }
+          },
+          "response": [
+            {
+              "name": "Healthy",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"status\":\"ok\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Account Lookup — camt.003",
+      "item": [
+        {
+          "name": "POST /payments/lookup — JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 200\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property(\"account_number\");",
+                  "    pm.expect(json).to.have.property(\"bank_name\");",
+                  "    pm.expect(json).to.have.property(\"bic\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"account_number\": \"ACC-B\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/lookup",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "lookup"]
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK — account found",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n    \"account_number\": \"ACC-B\",\n    \"bank_name\": \"Deutsche Exchange Bank\",\n    \"bic\": \"BANKDEFF\",\n    \"currency\": \"USD\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /payments/lookup — camt.003 XML",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 200\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"xml\");",
+                  "    const body = pm.response.text();",
+                  "    pm.expect(body).to.include(\"AcctRpt\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/xml"
+              },
+              {
+                "key": "Accept",
+                "value": "application/xml"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:camt.003.001.07\">\n  <GetAcct>\n    <MsgHdr>\n      <MsgId>COPEDUA{{$timestamp}}</MsgId>\n      <CreDtTm>{{$isoTimestamp}}</CreDtTm>\n    </MsgHdr>\n    <AcctQryDef>\n      <AcctCrit>\n        <NewCrit>\n          <SchCrit>\n            <AcctId>\n              <Id>\n                <Othr>\n                  <Id>ACC-B</Id>\n                </Othr>\n              </Id>\n            </AcctId>\n          </SchCrit>\n        </NewCrit>\n      </AcctCrit>\n    </AcctQryDef>\n  </GetAcct>\n</Document>"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/lookup",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "lookup"]
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK — camt.004 XML response",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/xml" }
+              ],
+              "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:camt.003.001.07\">\n  <AcctRpt>\n    <MsgHdr>\n      <MsgId>ACCT-ACC-B</MsgId>\n      <CreDtTm>2026-06-21T05:00:00Z</CreDtTm>\n    </MsgHdr>\n    <RptOrErr>\n      <AcctRpt>\n        <AcctId>\n          <Id>\n            <Othr>\n              <Id>ACC-B</Id>\n            </Othr>\n          </Id>\n        </AcctId>\n        <Nm>Deutsche Exchange Bank</Nm>\n        <Ccy>USD</Ccy>\n        <LglNm>BANKDEFF</LglNm>\n      </AcctRpt>\n    </RptOrErr>\n  </AcctRpt>\n</Document>"
+            }
+          ]
+        },
+        {
+          "name": "POST /payments/lookup — 404 not found",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"account_number\": \"NONEXISTENT\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/lookup",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "lookup"]
+            }
+          },
+          "response": [
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"error\":\"account not found\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payments — JSON",
+      "item": [
+        {
+          "name": "POST /payments — simple USD payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 202\", () => {",
+                  "    pm.response.to.have.status(202);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql(\"RECEIVED\");",
+                  "    pm.expect(json.iso_status).to.eql(\"RCVD\");",
+                  "    pm.expect(json.id).to.match(/^[0-9a-f-]+$/);",
+                  "    pm.collectionVariables.set(\"payment_id\", json.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "description": "UUID for idempotent request deduplication"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"end_to_end_id\": \"E2E-{{$timestamp}}\",\n    \"destination_bic\": \"BANKDEFF\",\n    \"dest_account\": \"DE89370400440532013000\",\n    \"amount\": 50000,\n    \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          },
+          "response": [
+            {
+              "name": "202 Accepted — RECEIVED",
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n    \"id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n    \"status\": \"RECEIVED\",\n    \"iso_status\": \"RCVD\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /payments — EUR with ISO 20022 fields",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 202\", () => {",
+                  "    pm.response.to.have.status(202);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql(\"RECEIVED\");",
+                  "    pm.expect(json.id).to.match(/^[0-9a-f-]+$/);",
+                  "    pm.collectionVariables.set(\"payment_id\", json.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"end_to_end_id\": \"E2E-EUR-{{$timestamp}}\",\n    \"destination_bic\": \"BANKDEFF\",\n    \"dest_account\": \"DE89370400440532013000\",\n    \"amount\": 125000,\n    \"currency\": \"EUR\",\n    \"instruction_id\": \"INSTR-{{$timestamp}}\",\n    \"charge_bearer\": \"SHAR\",\n    \"settlement_date\": \"{{$isoTimestamp}}\",\n    \"debtor_name\": \"ACME Corp\",\n    \"creditor_name\": \"Euro Import GmbH\",\n    \"purpose_code\": \"SUPP\",\n    \"remittance_info\": \"Invoice INV-2026-001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          },
+          "response": [
+            {
+              "name": "202 Accepted — ISO enriched",
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n    \"id\": \"b2c3d4e5-f6a7-8901-bcde-f12345678901\",\n    \"status\": \"RECEIVED\",\n    \"iso_status\": \"RCVD\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /payments — GBP to UK",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"end_to_end_id\": \"E2E-GBP-{{$timestamp}}\",\n    \"destination_bic\": \"BANKGB2L\",\n    \"dest_account\": \"GB29NWBK60161331926819\",\n    \"amount\": 75000,\n    \"currency\": \"GBP\",\n    \"debtor_name\": \"US Exports Ltd\",\n    \"creditor_name\": \"London Trading Co\",\n    \"purpose_code\": \"TRAD\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments — ISO 20022 XML (pacs.008 v1.08)",
+      "item": [
+        {
+          "name": "POST /payments — pacs.008 XML",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 202\", () => {",
+                  "    pm.response.to.have.status(202);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql(\"RECEIVED\");",
+                  "    pm.expect(json.id).to.match(/^[0-9a-f-]+$/);",
+                  "    pm.collectionVariables.set(\"payment_id\", json.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/xml"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08\">\n  <FIToFICstmrCdtTrf>\n    <GrpHdr>\n      <MsgId>PAYMENT-{{$timestamp}}</MsgId>\n      <CreDtTm>{{$isoTimestamp}}</CreDtTm>\n      <NbOfTxs>1</NbOfTxs>\n      <TtlIntrBkSttlmAmt Ccy=\"USD\">500.00</TtlIntrBkSttlmAmt>\n      <IntrBkSttlmDt>{{$isoTimestamp}}</IntrBkSttlmDt>\n      <SttlmInf>\n        <SttlmMtd>CLRG</SttlmMtd>\n      </SttlmInf>\n    </GrpHdr>\n    <CdtTrfTxInf>\n      <PmtId>\n        <InstrId>INSTR-XML-{{$timestamp}}</InstrId>\n        <EndToEndId>E2E-XML-{{$timestamp}}</EndToEndId>\n        <TxId>TX-XML-{{$timestamp}}</TxId>\n        <UETR>5c4f5e3a-9b8a-4f2e-8d7c-1a2b3c4d5e6f</UETR>\n      </PmtId>\n      <IntrBkSttlmAmt Ccy=\"USD\">500.00</IntrBkSttlmAmt>\n      <ChrgBr>CRED</ChrgBr>\n      <Dbtr>\n        <Nm>ACME Corp</Nm>\n      </Dbtr>\n      <DbtrAcct>\n        <Id>\n          <Othr>\n            <Id>US123456789</Id>\n          </Othr>\n        </Id>\n      </DbtrAcct>\n      <DbtrAgt>\n        <FinInstnId>\n          <Othr>\n            <Id>BANKUS33</Id>\n          </Othr>\n        </FinInstnId>\n      </DbtrAgt>\n      <CdtrAgt>\n        <FinInstnId>\n          <Othr>\n            <Id>BANKDEFF</Id>\n          </Othr>\n        </FinInstnId>\n      </CdtrAgt>\n      <Cdtr>\n        <Nm>Euro Import GmbH</Nm>\n      </Cdtr>\n      <CdtrAcct>\n        <Id>\n          <Othr>\n            <Id>DE89370400440532013000</Id>\n          </Othr>\n        </Id>\n      </CdtrAcct>\n      <Purp>\n        <Cd>SUPP</Cd>\n      </Purp>\n      <RmtInf>\n        <Ustrd>Invoice INV-2026-001</Ustrd>\n      </RmtInf>\n    </CdtTrfTxInf>\n  </FIToFICstmrCdtTrf>\n</Document>"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          },
+          "response": [
+            {
+              "name": "202 Accepted — JSON response",
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"id\":\"c3d4e5f6-a7b8-9012-cdef-123456789012\",\"status\":\"RECEIVED\",\"iso_status\":\"RCVD\"}"
+            }
+          ]
+        },
+        {
+          "name": "POST /payments — pacs.008 XML, receive pacs.002 XML response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 202\", () => {",
+                  "    pm.response.to.have.status(202);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql(\"RECEIVED\");",
+                  "    pm.expect(json.id).to.match(/^[0-9a-f-]+$/);",
+                  "    pm.collectionVariables.set(\"payment_id\", json.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/xml"
+              },
+              {
+                "key": "Accept",
+                "value": "application/xml"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08\">\n  <FIToFICstmrCdtTrf>\n    <GrpHdr>\n      <MsgId>PAYMENT-PACS002-{{$timestamp}}</MsgId>\n      <CreDtTm>{{$isoTimestamp}}</CreDtTm>\n      <NbOfTxs>1</NbOfTxs>\n      <TtlIntrBkSttlmAmt Ccy=\"EUR\">2500.00</TtlIntrBkSttlmAmt>\n      <IntrBkSttlmDt>{{$isoTimestamp}}</IntrBkSttlmDt>\n      <SttlmInf>\n        <SttlmMtd>CLRG</SttlmMtd>\n      </SttlmInf>\n    </GrpHdr>\n    <CdtTrfTxInf>\n      <PmtId>\n        <InstrId>INSTR-P002-{{$timestamp}}</InstrId>\n        <EndToEndId>E2E-P002-{{$timestamp}}</EndToEndId>\n        <TxId>TX-P002-{{$timestamp}}</TxId>\n        <UETR>7e8f9a0b-1c2d-3e4f-5a6b-7c8d9e0f1a2b</UETR>\n      </PmtId>\n      <IntrBkSttlmAmt Ccy=\"EUR\">2500.00</IntrBkSttlmAmt>\n      <ChrgBr>SLEV</ChrgBr>\n      <Dbtr>\n        <Nm>US Corp</Nm>\n      </Dbtr>\n      <DbtrAcct>\n        <Id>\n          <Othr>\n            <Id>US123456789</Id>\n          </Othr>\n        </Id>\n      </DbtrAcct>\n      <DbtrAgt>\n        <FinInstnId>\n          <Othr>\n            <Id>BANKUS33</Id>\n          </Othr>\n        </FinInstnId>\n      </DbtrAgt>\n      <CdtrAgt>\n        <FinInstnId>\n          <Othr>\n            <Id>BANKDEFF</Id>\n          </Othr>\n        </FinInstnId>\n      </CdtrAgt>\n      <Cdtr>\n        <Nm>Euro GmbH</Nm>\n      </Cdtr>\n      <CdtrAcct>\n        <Id>\n          <Othr>\n            <Id>DE89370400440532013000</Id>\n          </Othr>\n        </Id>\n      </CdtrAcct>\n    </CdtTrfTxInf>\n  </FIToFICstmrCdtTrf>\n</Document>"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          },
+          "response": [
+            {
+              "name": "202 Accepted — JSON acknowledgment",
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"id\":\"c3d4e5f6-a7b8-9012-cdef-123456789012\",\"status\":\"RECEIVED\",\"iso_status\":\"RCVD\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Query Payment (poll for async result)",
+      "item": [
+        {
+          "name": "GET /payments/{id} — by payment ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"status is 200\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.id).to.eql(pm.collectionVariables.get(\"payment_id\"));",
+                  "    pm.expect(json.status).to.be.oneOf([\"COMMITTED\", \"SETTLED\"]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/{{payment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "{{payment_id}}"]
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"uetr\":\"5c4f5e3a-9b8a-4f2e-8d7c-1a2b3c4d5e6f\",\"instruction_id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"end_to_end_id\":\"E2E-1747876800\",\"status\":\"COMMITTED\",\"iso_status\":\"ACCP\",\"amount\":50000,\"currency\":\"USD\",\"created_at\":\"2026-06-21T04:58:11.123456Z\"}"
+            }
+          ]
+        },
+        {
+          "name": "GET /payments/{id} — pacs.002 XML response",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/xml"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payments/{{payment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "{{payment_id}}"]
+            }
+          }
+        },
+        {
+          "name": "GET /payments/nonexistent — 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/nonexistent-id",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "nonexistent-id"]
+            }
+          },
+          "response": [
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"error\":\"payment not found\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Error Scenarios",
+      "item": [
+        {
+          "name": "POST /payments — missing required fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"end_to_end_id\": \"E2E-INVALID-{{$timestamp}}\",\n    \"amount\": 50000,\n    \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          },
+          "response": [
+            {
+              "name": "202 Accepted — saga will reject",
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"status\":\"RECEIVED\",\"iso_status\":\"RCVD\"}"
+            }
+          ]
+        },
+        {
+          "name": "POST /payments — invalid amount (negative)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"end_to_end_id\": \"E2E-NEG-{{$timestamp}}\",\n    \"destination_bic\": \"BANKDEFF\",\n    \"dest_account\": \"DE89370400440532013000\",\n    \"amount\": -100,\n    \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments",
+              "host": ["{{base_url}}"],
+              "path": ["payments"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

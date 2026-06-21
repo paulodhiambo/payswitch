@@ -22,6 +22,7 @@ import (
 	reconciliationpb "switch/api/proto/reconciliation"
 	routingpb "switch/api/proto/routing"
 	settlementpb "switch/api/proto/settlement"
+	"switch/internal/bankclient"
 	"switch/internal/compliance"
 	"switch/internal/gateway"
 	"switch/internal/lookup"
@@ -52,8 +53,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("gateway")
+	logger, lp, err := telemetry.InitLogger(ctx, cfg.OTLPEndpoint, "gateway")
+	if err != nil {
+		log.Fatalf("init logger: %v", err)
+	}
 	_ = logger
+	if lp != nil {
+		defer lp.Shutdown(ctx)
+	}
 
 	if cfg.OTLPEndpoint != "" {
 		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "gateway")
@@ -71,10 +78,19 @@ func main() {
 	defer pool.Close()
 
 	repo := db.NewPaymentRepo(pool)
-	bank := saga.NewMockBankClient()
-	bank.SetBalance("ACC-A", 10_000_000)
-	bank.SetBalance("ACC-B", 10_000_000)
-	bank.SetBalance("ACC-C", 10_000_000)
+
+	var bank ports.BankClient
+	if cfg.BankAPIEnabled {
+		bank = bankclient.New(bankclient.NewDBProvider(pool))
+		log.Print("using real bank API client")
+	} else {
+		mock := saga.NewMockBankClient()
+		mock.SetBalance("ACC-A", 10_000_000)
+		mock.SetBalance("ACC-B", 10_000_000)
+		mock.SetBalance("ACC-C", 10_000_000)
+		bank = mock
+		log.Print("using in-memory mock bank client (set BANK_API_ENABLED=true for real APIs)")
+	}
 
 	participantReg := participant.NewRegistry()
 	for _, p := range []*participant.Participant{

@@ -7,6 +7,7 @@ type PaymentStatus string
 const (
 	StatusReceived  PaymentStatus = "RECEIVED"
 	StatusValidated PaymentStatus = "VALIDATED"
+	StatusLookedUp  PaymentStatus = "LOOKED_UP"
 	StatusRouted    PaymentStatus = "ROUTED"
 	StatusQuoted    PaymentStatus = "QUOTED"
 	StatusScreened  PaymentStatus = "SCREENED"

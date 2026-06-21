@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,7 +27,9 @@ func (r *Relay) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = r.flushBatch(ctx)
+			if err := r.flushBatch(ctx); err != nil {
+				log.Printf("outbox relay error: %v", err)
+			}
 		}
 	}
 }

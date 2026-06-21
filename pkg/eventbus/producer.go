@@ -12,9 +12,10 @@ type Producer struct {
 
 func NewProducer(brokers []string) *Producer {
 	return &Producer{writer: &kafka.Writer{
-		Addr:         kafka.TCP(brokers...),
-		Balancer:     &kafka.Hash{},
-		RequiredAcks: kafka.RequireAll,
+		Addr:                   kafka.TCP(brokers...),
+		Balancer:               &kafka.Hash{},
+		RequiredAcks:           kafka.RequireAll,
+		AllowAutoTopicCreation: true,
 	}}
 }
 

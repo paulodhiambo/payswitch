@@ -43,6 +43,7 @@ func (r *mockRepo) CreateWithEvent(_ context.Context, _ *domain.Payment) error  
 func (r *mockRepo) UpdateStatus(_ context.Context, _ string, _ domain.PaymentStatus) error { return nil }
 func (r *mockRepo) GetByEndToEndID(_ context.Context, _ string) (*domain.Payment, error) { return nil, nil }
 func (r *mockRepo) MarkReserved(_ context.Context, _ string, _ time.Duration) error { return nil }
+func (r *mockRepo) UpdateRoute(_ context.Context, _ string, _ int64, _ int) error  { return nil }
 
 type mockSaga struct {
 	compensated []string

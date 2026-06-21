@@ -25,6 +25,7 @@ type Config struct {
 	NotificationAddr    string `mapstructure:"NOTIFICATION_ADDR"`
 	RoutingAddr         string `mapstructure:"ROUTING_ADDR"`
 	ReconciliationAddr  string `mapstructure:"RECONCILIATION_ADDR"`
+	BankAPIEnabled      bool   `mapstructure:"BANK_API_ENABLED"`
 	// Portal API
 	CSRFSecret   string `mapstructure:"CSRF_SECRET"`   // hex-encoded 32-byte key; random if unset (tokens lost on restart)
 	PortalOrigin string `mapstructure:"PORTAL_ORIGIN"` // allowed CORS origin, e.g. https://portal.example.com
@@ -44,8 +45,14 @@ func Load() (*Config, error) {
 	v.SetDefault("SETTLEMENT_ADDR", "localhost:9093")
 	v.SetDefault("QUOTING_ADDR", "localhost:9094")
 	v.SetDefault("NOTIFICATION_ADDR", "")
+	v.SetDefault("ROUTING_ADDR", "")
+	v.SetDefault("RECONCILIATION_ADDR", "")
+	v.SetDefault("OTLP_ENDPOINT", "")
+	v.SetDefault("CSRF_SECRET", "")
+	v.SetDefault("PORTAL_ORIGIN", "")
 	v.SetDefault("KAFKA_BROKERS", []string{})
 	v.SetDefault("SCYLLA_HOSTS", []string{})
+	v.SetDefault("BANK_API_ENABLED", false)
 
 	_ = v.BindEnv("KAFKA_BROKERS")
 	_ = v.BindEnv("SCYLLA_HOSTS")

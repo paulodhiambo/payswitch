@@ -29,7 +29,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := telemetry.InitLogger("reconciliation-service")
+	logger, lp, err := telemetry.InitLogger(ctx, cfg.OTLPEndpoint, "reconciliation-service")
+	if err != nil {
+		slog.Error("init logger", "error", err)
+		os.Exit(1)
+	}
+	if lp != nil {
+		defer lp.Shutdown(ctx)
+	}
 
 	if cfg.OTLPEndpoint != "" {
 		tp, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint, "reconciliation-service")
