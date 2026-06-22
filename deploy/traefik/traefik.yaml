@@ -12,13 +12,12 @@ api:
 ping: {}
 
 providers:
-  docker:
-    exposedByDefault: false
   file:
     filename: /etc/traefik/dynamic.yaml
     watch: true
 
 tracing:
-  openTelemetry:
-    address: "otelcol:4317"
-    insecure: true
+  otlp:
+    grpc:
+      endpoint: "otelcol:4317"
+      insecure: true

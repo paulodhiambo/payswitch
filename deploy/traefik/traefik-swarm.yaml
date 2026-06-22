@@ -46,7 +46,6 @@ providers:
     watch: true
 
 tracing:
-  # Traefik v3: tracing.openTelemetry → tracing.otlp
   otlp:
     grpc:
       endpoint: "otelcol:4317"
