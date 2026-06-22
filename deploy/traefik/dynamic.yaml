@@ -4,9 +4,8 @@
 #   • TLS certificates and mTLS options (labels can't express these)
 #   • All middleware definitions (referenced as @file from label routes)
 #   • The dashboard router (targets api@internal — cannot be a service label)
-#
-# HTTP routes (routers + services) come from container/service labels in
-# compose.yaml (Docker provider) or stack.yaml (Swarm provider).
+#   • HTTP routes for Docker Compose mode (labels not used — Docker provider
+#     can't access the socket from a non-root container).
 
 tls:
   certificates:
@@ -17,7 +16,7 @@ tls:
       clientAuth:
         caFiles:
           - /certs/ca-cert.pem
-        authType: VerifyClientCertIfGiven
+        clientAuthType: VerifyClientCertIfGiven
 
 http:
   routers:
@@ -26,8 +25,79 @@ http:
         - traefik
       rule: "PathPrefix(`/`)"
       service: api@internal
+
+    # ── Local-dev routes (Docker Compose — no Docker provider) ─────────────
+    payments:
+      entryPoints:
+        - mtls
+      rule: "PathPrefix(`/payments`)"
+      service: gateway
+      tls: {}
       middlewares:
-        - dashboard-auth
+        - inject-participant-id
+        - rate-limit-payments
+
+    health:
+      entryPoints:
+        - mtls
+      rule: "Path(`/healthz`)"
+      service: gateway
+      tls: {}
+
+    portal-api:
+      entryPoints:
+        - web
+      rule: "PathPrefix(`/portal/api`)"
+      service: portal-api
+      middlewares:
+        - forward-auth
+        - rate-limit-portal
+
+    root-redirect:
+      entryPoints:
+        - web
+      rule: "Path(`/`)"
+      middlewares:
+        - redirect-root
+      service: portal-api
+
+    portal-redirect:
+      entryPoints:
+        - web
+      rule: "Path(`/portal`)"
+      middlewares:
+        - redirect-portal
+      service: portal-api
+
+    portal-spa:
+      entryPoints:
+        - web
+      rule: "PathPrefix(`/portal/`)"
+      service: portal-api
+      middlewares:
+        - forward-auth
+
+    auth:
+      entryPoints:
+        - web
+      rule: "Path(`/login`) || Path(`/logout`)"
+      service: auth-service
+
+  services:
+    gateway:
+      loadBalancer:
+        servers:
+          - url: "http://gateway:8080"
+
+    portal-api:
+      loadBalancer:
+        servers:
+          - url: "http://portal-api:8080"
+
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth-service:9000"
 
   middlewares:
     # Extracts mTLS client certificate CN → X-Forwarded-Client-Cert
@@ -43,7 +113,7 @@ http:
         burst:   4000000
         period:  1m
         sourceCriterion:
-          requestHeader: X-Forwarded-For
+          requestHeaderName: X-Forwarded-For
 
     rate-limit-portal:
       rateLimit:
@@ -51,7 +121,7 @@ http:
         burst:   600
         period:  1m
         sourceCriterion:
-          requestHeader: X-Forwarded-For
+          requestHeaderName: X-Forwarded-For
 
     # Forward-auth — validates session cookie with auth-service.
     # On success, auth-service injects identity headers that portal-api reads.
@@ -67,19 +137,17 @@ http:
           - X-User-Role
           - X-Participant-Id
 
+    # Redirect / → /portal/ so browsers hitting the root reach the SPA.
+    redirect-root:
+      redirectRegex:
+        regex: "^(https?://[^/]+)/$"
+        replacement: "${1}/portal/"
+        permanent: false
+
     # Redirect /portal → /portal/ so the Go static file handler matches.
     redirect-portal:
       redirectRegex:
-        regex: "^/portal$"
-        replacement: "/portal/"
+        regex: "^(https?://[^/]+)/portal$"
+        replacement: "${1}/portal/"
         permanent: true
 
-    # Dashboard basic auth.
-    # usersFile is the Docker secret mounted at /run/secrets/dashboard_users.
-    # htpasswd format: username:$apr1$<hash>
-    # Created by pre-deploy.sh using: openssl passwd -apr1 "$TRAEFIK_DASHBOARD_PASSWORD"
-    dashboard-auth:
-      basicAuth:
-        usersFile: "/run/secrets/dashboard_users"
-        realm: "PaySwitch Operations"
-        removeHeader: true   # strip Authorization before proxying to the dashboard

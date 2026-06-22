@@ -2,9 +2,8 @@ service:
   env: development
   secret: "change-me-to-a-random-string-1234567"
 
-# site.url left unset so Uptrace uses the request host (works with any public IP).
-# site:
-#   url: http://localhost:14318
+site:
+  url: http://0.0.0.0:14318
 
 listen:
   http:
