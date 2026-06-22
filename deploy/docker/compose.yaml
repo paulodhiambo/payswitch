@@ -166,6 +166,11 @@ services:
         SERVICE: auth-service
     ports:
       - "9009:9000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.entrypoints=web"
+      - "traefik.http.routers.auth.rule=Path(`/login`) || Path(`/logout`)"
+      - "traefik.http.services.auth-service.loadbalancer.server.port=9000"
     depends_on:
       certgen: { condition: service_completed_successfully }
     healthcheck:
@@ -183,6 +188,7 @@ services:
     ports:
       - "8443:8443"   # HTTPS + mTLS — bank payment API
       - "8000:8000"   # HTTP — portal API + SPA
+      - "8080:8080"   # HTTP — Traefik dashboard (basic-auth)
     volumes:
       - ../traefik/traefik.yaml:/etc/traefik/traefik.yaml:ro
       - ../traefik/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
@@ -202,7 +208,17 @@ services:
       args:
         SERVICE: gateway
     ports:
-      - "9095:9095"   # metrics only; internal HTTP :8080 is reached via Kong
+      - "9095:9095"   # metrics only; internal HTTP :8080 is reached via Traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.payments.entrypoints=mtls"
+      - "traefik.http.routers.payments.rule=PathPrefix(`/payments`)"
+      - "traefik.http.routers.payments.tls=true"
+      - "traefik.http.routers.payments.middlewares=inject-participant-id@file,rate-limit-payments@file"
+      - "traefik.http.routers.health.entrypoints=mtls"
+      - "traefik.http.routers.health.rule=Path(`/healthz`)"
+      - "traefik.http.routers.health.tls=true"
+      - "traefik.http.services.gateway.loadbalancer.server.port=8080"
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9095"
@@ -387,6 +403,18 @@ services:
         SERVICE: portal-api
     ports:
       - "8090:8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portal-api.entrypoints=web"
+      - "traefik.http.routers.portal-api.rule=PathPrefix(`/portal/api`)"
+      - "traefik.http.routers.portal-api.middlewares=forward-auth@file,rate-limit-portal@file"
+      - "traefik.http.routers.portal-spa.entrypoints=web"
+      - "traefik.http.routers.portal-spa.rule=PathPrefix(`/portal/`)"
+      - "traefik.http.routers.portal-spa.middlewares=forward-auth@file"
+      - "traefik.http.routers.portal-redirect.entrypoints=web"
+      - "traefik.http.routers.portal-redirect.rule=Path(`/portal`)"
+      - "traefik.http.routers.portal-redirect.middlewares=redirect-portal@file"
+      - "traefik.http.services.portal-api.loadbalancer.server.port=8080"
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9095"
