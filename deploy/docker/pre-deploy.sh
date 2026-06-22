@@ -13,6 +13,7 @@
 #   TRAEFIK_DASHBOARD_PASSWORD dashboard login password (plain text — hashed here)
 #   VPS_GHCR_TOKEN             GitHub PAT with read:packages scope
 #   GITHUB_ACTOR               GitHub username (for GHCR login)
+#   UPTRACE_SITE_URL           Public URL of Uptrace UI, e.g. http://YOUR_VPS_IP:14318
 #
 # Order of operations (critical — do NOT reorder):
 #   1. GHCR login
@@ -41,6 +42,7 @@ POSTGRES_WAIT_TIMEOUT=120   # seconds to wait for postgres to become ready
 : "${TRAEFIK_DASHBOARD_PASSWORD:?TRAEFIK_DASHBOARD_PASSWORD is required}"
 : "${VPS_GHCR_TOKEN:?VPS_GHCR_TOKEN is required}"
 : "${GITHUB_ACTOR:?GITHUB_ACTOR is required}"
+: "${UPTRACE_SITE_URL:?UPTRACE_SITE_URL is required (e.g. http://YOUR_VPS_IP:14318)}"
 
 echo "==> PaySwitch pre-deploy  (stack: ${STACK_NAME}, tag: ${IMAGE_TAG})"
 
@@ -105,7 +107,15 @@ else
   echo "    To rotate: docker secret rm ${SECRET_NAME} && re-run."
 fi
 
-# ── 7. Deploy / update the Swarm stack ───────────────────────────────────────
+# ── 7. Generate runtime configs from templates ───────────────────────────────
+# Uptrace site.url must be the public VPS address so the browser-side JS
+# calls the right host instead of localhost (blocked by Chrome PNA policy).
+echo "--> Generating uptrace runtime config..."
+envsubst '${UPTRACE_SITE_URL}' \
+  < "${DEPLOY_DIR}/deploy/uptrace/uptrace.yml" \
+  > "${DEPLOY_DIR}/deploy/uptrace/uptrace.runtime.yml"
+
+# ── 9. Deploy / update the Swarm stack ───────────────────────────────────────
 # This starts postgres (and all other services). Migrations run AFTER this.
 echo "--> Deploying stack '${STACK_NAME}' (image: ${IMAGE_TAG})..."
 GHCR_REPO="${GHCR_REPO}" \
@@ -118,7 +128,7 @@ CSRF_SECRET="${CSRF_SECRET}" \
     -c "${DEPLOY_DIR}/deploy/docker/stack.yaml" \
     "${STACK_NAME}"
 
-# ── 8. Wait for postgres to be healthy ────────────────────────────────────────
+# ── 10. Wait for postgres to be healthy ───────────────────────────────────────
 # Postgres runs as a Swarm service now. Poll until a container is up and
 # pg_isready succeeds. This is the gate before running migrations.
 echo "--> Waiting for postgres to be ready (timeout: ${POSTGRES_WAIT_TIMEOUT}s)..."
@@ -140,7 +150,7 @@ while true; do
   echo "    Still waiting... (${ELAPSED}s)"
 done
 
-# ── 9. Run database migrations ────────────────────────────────────────────────
+# ── 11. Run database migrations ───────────────────────────────────────────────
 # One-shot container on the overlay network. Postgres is confirmed healthy above.
 # Applied in alphabetical order; scripts must be idempotent (IF NOT EXISTS etc.).
 echo "--> Running database migrations..."
