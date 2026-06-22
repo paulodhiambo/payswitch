@@ -224,6 +224,16 @@ jobs:
             --exclude='*.key'
             --exclude='portal/dist'
 
+      - name: Sync deploy configs to VPS
+        uses: easingthemes/ssh-deploy@v5.1.0
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.VPS_HOST }}
+          REMOTE_USER: ubuntu
+          SOURCE: deploy/
+          TARGET: /opt/payswitch/deploy/
+          ARGS: -avz --delete
+
       - name: Run pre-deploy + stack deploy
         uses: appleboy/ssh-action@v1
         timeout-minutes: 35
