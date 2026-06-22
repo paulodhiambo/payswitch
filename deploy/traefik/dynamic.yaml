@@ -63,10 +63,18 @@ http:
         - forward-auth
         - rate-limit-portal
 
+    portal-redirect:
+      entryPoints:
+        - web
+      rule: "Path(`/portal`)"
+      middlewares:
+        - redirect-portal
+      service: portal-api
+
     portal-spa:
       entryPoints:
         - web
-      rule: "PathPrefix(`/portal`)"
+      rule: "PathPrefix(`/portal/`)"
       service: portal-api
       middlewares:
         - forward-auth
@@ -132,6 +140,13 @@ http:
           - X-authentik-groups
           - X-User-Role
           - X-Participant-Id
+
+    # Redirect /portal → /portal/ so the Go static file handler matches.
+    redirect-portal:
+      redirectRegex:
+        regex: "^/portal$"
+        replacement: "/portal/"
+        permanent: true
 
     # Dashboard basic auth.
     # usersFile is the Docker secret mounted at /run/secrets/dashboard_users.
