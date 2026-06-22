@@ -27,6 +27,13 @@ log:
 accessLog:
   format: json
 
+metrics:
+  prometheus:
+    entryPoint: traefik
+    addEntryPointsLabels: true
+    addServicesLabels: true
+    addRoutersLabels: true
+
 providers:
   # ── Docker Swarm provider (Traefik v3 syntax) ──────────────────────────────
   # In Traefik v3, Swarm mode is configured under `providers.swarm`,

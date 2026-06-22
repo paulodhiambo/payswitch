@@ -278,12 +278,16 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Not authenticated. Find the original path requested.
-	origURI := r.Header.Get("X-Original-URI")
+	// Traefik forwardAuth sets X-Forwarded-Uri with the original request path.
+	origURI := r.Header.Get("X-Forwarded-Uri")
+	if origURI == "" {
+		origURI = r.Header.Get("X-Original-URI")
+	}
 	if origURI == "" {
 		origURI = r.Header.Get("X-Original-Url")
 	}
 	if origURI == "" {
-		origURI = r.URL.Path
+		origURI = "/portal/"
 	}
 
 	// If the request is an API request, return 401 directly
@@ -294,12 +298,23 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Otherwise, redirect page requests to /login
-	rdUrl := "/login"
-	if origURI != "" && origURI != "/login" && origURI != "/logout" {
-		rdUrl = "/login?rd=" + url.QueryEscape(origURI)
+	// Construct an absolute login URL so Traefik doesn't resolve it against
+	// the internal auth-service URL when forwarding the redirect to the browser.
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if proto == "" {
+		proto = "http"
 	}
-	http.Redirect(w, r, rdUrl, http.StatusFound)
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	loginURL := proto + "://" + host + "/login"
+	rdUrl := loginURL
+	if origURI != "" && origURI != "/login" && origURI != "/logout" {
+		rdUrl = loginURL + "?rd=" + url.QueryEscape(origURI)
+	}
+	w.Header().Set("Location", rdUrl)
+	w.WriteHeader(http.StatusFound)
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -350,7 +365,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		if rd == "" {
 			rd = "/portal/"
 		}
-		http.Redirect(w, r, rd, http.StatusFound)
+		w.Header().Set("Location", rd)
+		w.WriteHeader(http.StatusFound)
 	}
 }
 
@@ -366,7 +382,8 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 	})
-	http.Redirect(w, r, "/login", http.StatusFound)
+	w.Header().Set("Location", "/login")
+	w.WriteHeader(http.StatusFound)
 }
 
 func main() {

@@ -25,8 +25,6 @@ http:
         - traefik
       rule: "PathPrefix(`/`)"
       service: api@internal
-      middlewares:
-        - dashboard-auth
 
     # ── Local-dev routes (Docker Compose — no Docker provider) ─────────────
     payments:
@@ -54,6 +52,14 @@ http:
       middlewares:
         - forward-auth
         - rate-limit-portal
+
+    root-redirect:
+      entryPoints:
+        - web
+      rule: "Path(`/`)"
+      middlewares:
+        - redirect-root
+      service: portal-api
 
     portal-redirect:
       entryPoints:
@@ -131,20 +137,17 @@ http:
           - X-User-Role
           - X-Participant-Id
 
+    # Redirect / → /portal/ so browsers hitting the root reach the SPA.
+    redirect-root:
+      redirectRegex:
+        regex: "^(https?://[^/]+)/$"
+        replacement: "${1}/portal/"
+        permanent: false
+
     # Redirect /portal → /portal/ so the Go static file handler matches.
     redirect-portal:
       redirectRegex:
-        regex: "^/portal$"
-        replacement: "/portal/"
+        regex: "^(https?://[^/]+)/portal$"
+        replacement: "${1}/portal/"
         permanent: true
 
-    # Dashboard basic auth.
-    # usersFile is the Docker secret mounted at /run/secrets/dashboard_users.
-    # htpasswd format: username:$apr1$<hash>
-    # Created by pre-deploy.sh using: openssl passwd -apr1 "$TRAEFIK_DASHBOARD_PASSWORD"
-    dashboard-auth:
-      basicAuth:
-        users:
-          - "admin:$apr1$Bl9kiFS5$0BVv8vkagC/pu64CWxV4V."
-        realm: "PaySwitch Operations"
-        removeHeader: true   # strip Authorization before proxying to the dashboard

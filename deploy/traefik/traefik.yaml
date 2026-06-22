@@ -11,6 +11,15 @@ api:
 
 ping: {}
 
+accessLog: {}
+
+metrics:
+  prometheus:
+    entryPoint: traefik
+    addEntryPointsLabels: true
+    addServicesLabels: true
+    addRoutersLabels: true
+
 providers:
   file:
     filename: /etc/traefik/dynamic.yaml
