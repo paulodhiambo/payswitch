@@ -3,7 +3,7 @@ service:
   secret: "change-me-to-a-random-string-1234567"
 
 site:
-  url: http://0.0.0.0:14318
+  url: ${UPTRACE_SITE_URL}
 
 listen:
   http:

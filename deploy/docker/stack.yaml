@@ -162,7 +162,7 @@ services:
         published: 14318
         mode: host
     volumes:
-      - /opt/payswitch/deploy/uptrace/uptrace.yml:/etc/uptrace/config.yml:ro
+      - /opt/payswitch/deploy/uptrace/uptrace.runtime.yml:/etc/uptrace/config.yml:ro
     networks:
       - net
     deploy:

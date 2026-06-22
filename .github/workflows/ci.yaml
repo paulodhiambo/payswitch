@@ -257,3 +257,7 @@ jobs:
 
             chmod +x /opt/payswitch/deploy/docker/pre-deploy.sh
             bash /opt/payswitch/deploy/docker/pre-deploy.sh
+
+            # Force-reload Traefik so it picks up the updated dynamic.yaml
+            # immediately, rather than waiting for inotify inside the container.
+            docker service update --force payswitch_traefik
