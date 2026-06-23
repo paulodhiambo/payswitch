@@ -208,6 +208,10 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   gateway:
     image: ${GHCR_REPO}/gateway:${IMAGE_TAG:-latest}
+    ports:
+      - target: 8080
+        published: 8091
+        mode: host
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9095"
@@ -354,6 +358,10 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   portal-api:
     image: ${GHCR_REPO}/portal-api:${IMAGE_TAG:-latest}
+    ports:
+      - target: 8080
+        published: 8090
+        mode: host
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9095"
